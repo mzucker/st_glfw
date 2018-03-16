@@ -78,13 +78,15 @@ GLfloat u_resolution[3]; // set every frame
 GLfloat u_mouse[4] = { -1, -1, -1, -1 }; 
 GLfloat u_time_delta = 0;
 GLfloat u_date[4]; // set every frame
+GLfloat u_pixel_scale[2] = { 1, 1 };
+
 GLint u_frame = 0;
+
 
 //////////////////////////////////////////////////////////////////////
 
 int window_size[2] = { 640, 360 };
 int framebuffer_size[2] = { 0, 0 };
-int pixel_scale[2] = { 1, 1 };
 
 double cur_mouse[2] = { 0, 0 };
 
@@ -123,6 +125,7 @@ const char* fragment_src[8] = {
     "uniform float iTimeDelta; "
     "uniform vec4 iDate; "
     "uniform int iFrame; "
+    "uniform vec2 iPixelScale; "
     "float iGlobalTime; "
     "out vec4 fragColor; ",
 
@@ -140,7 +143,7 @@ const char* fragment_src[8] = {
     
     "void main() {\n"
     "  iGlobalTime = iTime;\n"
-    "  mainImage(fragColor, gl_FragCoord.xy);\n"
+    "  mainImage(fragColor, gl_FragCoord.xy/iPixelScale.xy);\n"
     "}\n"
     
 
@@ -299,8 +302,8 @@ int quick_png(const char* filename,
 
     const float base_res = 72./.0254;
   
-    int res_x = base_res * pixel_scale[0];
-    int res_y = base_res * pixel_scale[1];
+    int res_x = base_res * u_pixel_scale[0];
+    int res_y = base_res * u_pixel_scale[1];
 
     png_set_pHYs(png_ptr, info_ptr,
                  res_x, res_y,
@@ -381,7 +384,7 @@ void render(GLFWwindow* window) {
 
     for (int i=0; i<2; ++i) {
         float denom = window_size[i] ? window_size[i] : 1;
-        pixel_scale[i] = framebuffer_size[i] / denom;
+        u_pixel_scale[i] = framebuffer_size[i] / denom;
     }
 
     double frame_start = glfwGetTime();
@@ -402,8 +405,8 @@ void render(GLFWwindow* window) {
     u_date[3] = ( ((ltime->tm_hour * 60.f) + ltime->tm_min) * 60.f +
                   ltime->tm_sec + tv.tv_usec * 1e-6f );
 
-    u_resolution[0] = framebuffer_size[0];
-    u_resolution[1] = framebuffer_size[1];
+    u_resolution[0] = framebuffer_size[0] / u_pixel_scale[0];
+    u_resolution[1] = framebuffer_size[1] / u_pixel_scale[1];
     u_resolution[2] = 1.f;
 
     check_opengl_errors("before set uniforms");
@@ -490,8 +493,8 @@ void cursor_pos_callback(GLFWwindow* window,
                          double x, double y) {
 
 
-    cur_mouse[0] = x * pixel_scale[0];
-    cur_mouse[1] = framebuffer_size[1] - y * pixel_scale[1];
+    cur_mouse[0] = x;
+    cur_mouse[1] = window_size[1] - y;
 
     if (mouse_down) {
         u_mouse[0] = cur_mouse[0];
@@ -850,6 +853,7 @@ void setup_shaders() {
     add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT);
     add_uniform("iDate", &u_date, GL_FLOAT_VEC4);
     add_uniform("iFrame", &u_frame, GL_INT);
+    add_uniform("iPixelScale", &u_pixel_scale, GL_FLOAT_VEC2);
 
     check_opengl_errors("after setting up uniforms");
 
