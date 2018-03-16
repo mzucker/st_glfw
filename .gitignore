@@ -1,0 +1,5 @@
+*~
+frame*.png
+*.dSYM
+st_glfw
+
