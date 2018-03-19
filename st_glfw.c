@@ -7,6 +7,7 @@
 #include <math.h>
 #include <png.h>
 #include <ctype.h>
+#include <assert.h>
 
 //////////////////////////////////////////////////////////////////////
 
@@ -115,7 +116,23 @@ const char* vertex_src[1] = {
     "}\n"
 };
 
-const char* fragment_src[8] = {
+enum {
+    FRAG_SRC_DECL_SLOT = 0,
+    FRAG_SRC_CH0_SLOT = 1,
+    FRAG_SRC_CH1_SLOT = 2,
+    FRAG_SRC_CH2_SLOT = 3,
+    FRAG_SRC_CH3_SLOT = 4,
+    FRAG_SRC_NEWLINE_SLOT = 5,
+    FRAG_SRC_MAINIMAGE_SLOT = 6,
+    FRAG_SRC_MAIN_SLOT = 7,
+    FRAG_SRC_NUM_SLOTS = 8
+};
+
+char*  shader = NULL;
+size_t shader_alloc = 0;
+size_t shader_size = 0;
+
+const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
     "#version 150\n"
     "uniform float iTime; "
@@ -128,10 +145,10 @@ const char* fragment_src[8] = {
     "float iGlobalTime; "
     "out vec4 fragColor; ",
 
-    "", 
-    "",
-    "",
-    "",
+    "", // iChannel0
+    "", // ichannel1
+    "", // ichannel2
+    "", // ichannel3
     
     "\n",
     
@@ -641,9 +658,23 @@ void load_shader(const char* filename) {
   
     fseek(fp, 0, SEEK_SET);
 
-    char* buf = (char*)malloc(fsize);
+    if (!shader) {
+        
+        shader = (char*)malloc(fsize);
+        shader_alloc = fsize;
+        
+    } else if (shader_alloc < shader_size + (size_t)fsize) {
+        
+        while (shader_alloc < shader_size + (size_t)fsize) {
+            shader_alloc *= 2;
+        }
+        
+        shader = (char*)realloc(shader, shader_alloc);
 
-    int nread = fread(&(buf[0]), fsize, 1, fp);
+    }
+
+    assert(shader_size + (size_t)fsize <= shader_alloc);
+    int nread = fread(shader + shader_size, fsize, 1, fp);
 
     if (nread != 1) {
         fprintf(stderr, "error reading %s\n\n", filename);
@@ -651,7 +682,8 @@ void load_shader(const char* filename) {
   
     fclose(fp);
 
-    fragment_src[6] = buf;
+    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader;
+    shader_size += fsize;
 
   
 }
@@ -830,13 +862,14 @@ void setup_shaders() {
                      "uniform %s %s; ",
                      stype, samplers[i].name);
 
-            fragment_src[i+1] = sbuf[i];
+            fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
             
         }
         
     }
 
-    GLuint fragment_shader = make_shader(GL_FRAGMENT_SHADER, 8,
+    GLuint fragment_shader = make_shader(GL_FRAGMENT_SHADER,
+                                         FRAG_SRC_NUM_SLOTS,
                                          fragment_src);
                                 
     program = glCreateProgram();
@@ -977,6 +1010,7 @@ int main(int argc, char** argv) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
+    free(shader);
     
     return 0;
     
