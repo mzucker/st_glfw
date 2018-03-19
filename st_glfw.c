@@ -102,6 +102,7 @@ int record_frames = 100;
 
 int animating = 1;
 int recording = 0;
+int need_render = 0;
 int single_shot = 0;
 int mouse_down = 0;
 
@@ -130,6 +131,7 @@ enum {
 char*  shader = NULL;
 size_t shader_alloc = 0;
 size_t shader_size = 0;
+int shader_count = 0;
 
 const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
@@ -461,6 +463,7 @@ void render(GLFWwindow* window) {
     }
     
     last_frame_start = frame_start;
+    need_render = 0;
     
 }
 
@@ -496,7 +499,10 @@ void mouse_button_callback(GLFWwindow* window,
             
         }
         
+        need_render = 1;
+        
     }
+
 
 }
 
@@ -512,6 +518,7 @@ void cursor_pos_callback(GLFWwindow* window,
     if (mouse_down) {
         u_mouse[0] = cur_mouse[0];
         u_mouse[1] = cur_mouse[1];
+        need_render = 1;
     }
     
 }
@@ -567,6 +574,9 @@ void key_callback(GLFWwindow* window, int key,
         }
 
     }
+
+    need_render = 1;
+    
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -655,7 +665,8 @@ void load_shader(const char* filename) {
   
     fseek(fp, 0, SEEK_SET);
 
-    const char* lineno = "\n#line 0\n";
+    char lineno[256];
+    snprintf(lineno, 256, "\n#line 0 %d\n", shader_count++);
     size_t lineno_size = strlen(lineno);
 
     size_t new_size = shader_size + (size_t)fsize + lineno_size;
@@ -997,8 +1008,10 @@ int main(int argc, char** argv) {
     reset();
     
     while (!glfwWindowShouldClose(window)) {
-        
-        render(window);
+
+        if (animating || recording || need_render) {
+            render(window);
+        }
         
         if (animating || recording) {
             glfwPollEvents();
