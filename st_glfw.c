@@ -122,10 +122,9 @@ enum {
     FRAG_SRC_CH1_SLOT = 2,
     FRAG_SRC_CH2_SLOT = 3,
     FRAG_SRC_CH3_SLOT = 4,
-    FRAG_SRC_NEWLINE_SLOT = 5,
-    FRAG_SRC_MAINIMAGE_SLOT = 6,
-    FRAG_SRC_MAIN_SLOT = 7,
-    FRAG_SRC_NUM_SLOTS = 8
+    FRAG_SRC_MAINIMAGE_SLOT = 5,
+    FRAG_SRC_MAIN_SLOT = 6,
+    FRAG_SRC_NUM_SLOTS = 7
 };
 
 char*  shader = NULL;
@@ -150,9 +149,7 @@ const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "", // ichannel2
     "", // ichannel3
     
-    "\n",
-    
-    "void mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
+    "\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
     "    vec2 uv = fragCoord / iResolution.xy; "
     "    fragColor = vec4(uv,0.5+0.5*sin(iTime),1.0);"
     "}\n",
@@ -658,14 +655,19 @@ void load_shader(const char* filename) {
   
     fseek(fp, 0, SEEK_SET);
 
+    const char* lineno = "\n#line 0\n";
+    size_t lineno_size = strlen(lineno);
+
+    size_t new_size = shader_size + (size_t)fsize + lineno_size;
+
     if (!shader) {
         
-        shader = (char*)malloc(fsize);
-        shader_alloc = fsize;
+        shader = (char*)malloc(new_size);
+        shader_alloc = new_size;
         
-    } else if (shader_alloc < shader_size + (size_t)fsize) {
+    } else if (shader_alloc < new_size) {
         
-        while (shader_alloc < shader_size + (size_t)fsize) {
+        while (shader_alloc < new_size) {
             shader_alloc *= 2;
         }
         
@@ -673,8 +675,10 @@ void load_shader(const char* filename) {
 
     }
 
-    assert(shader_size + (size_t)fsize <= shader_alloc);
-    int nread = fread(shader + shader_size, fsize, 1, fp);
+    memcpy(shader + shader_size, lineno, lineno_size);
+
+    assert(shader_alloc >= new_size);
+    int nread = fread(shader + shader_size + lineno_size, fsize, 1, fp);
 
     if (nread != 1) {
         fprintf(stderr, "error reading %s\n\n", filename);
@@ -683,7 +687,7 @@ void load_shader(const char* filename) {
     fclose(fp);
 
     fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader;
-    shader_size += fsize;
+    shader_size  = new_size;
 
   
 }
