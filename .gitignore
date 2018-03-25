@@ -1,5 +1,4 @@
 *~
 frame*.png
 *.dSYM
-st_glfw
-
+build/*
