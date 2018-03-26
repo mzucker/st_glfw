@@ -77,7 +77,7 @@ typedef struct channel {
     int vflip;
     int wrap;
 
-    size_t width, height, size;
+    size_t channels, width, height, size;
     buffer_t texture;
 
     int dirty;
@@ -436,16 +436,24 @@ void update_teximage(channel_t* channel) {
         count = 1;
     }
 
+    GLenum format;
+
+    if (channel->channels == 4) {
+        format = GL_RGBA;
+    } else {
+        format = GL_RGB;
+    }
+
     assert( channel->texture.size == channel->size * count );
 
     for (int i=0; i<count; ++i) {
     
         if (!channel->initialized) {
 
-            glTexImage2D(target + i, 0, GL_RGB,
+            glTexImage2D(target + i, 0, format,
                          channel->width,
                          channel->height, 0,
-                         GL_RGB, GL_UNSIGNED_BYTE,
+                         format, GL_UNSIGNED_BYTE,
                          channel->texture.data + i*channel->size);
 
         } else {
@@ -453,7 +461,7 @@ void update_teximage(channel_t* channel) {
             glTexSubImage2D(target + i, 0,
                             0, 0,
                             channel->width, channel->height,
-                            GL_RGB, GL_UNSIGNED_BYTE,
+                            format, GL_UNSIGNED_BYTE,
                             channel->texture.data + i*channel->size);
 
         }
@@ -755,12 +763,14 @@ void load_image(channel_t* channel, const char* src) {
         !strcasecmp(extension, "jpeg")) {
 
         read_jpg(&raw, channel->vflip,
+                 &channel->channels,
                  &channel->width, &channel->height, &channel->size,
                  &channel->texture);
                 
     } else if (!strcasecmp(extension, "png")) {
 
         read_png(&raw, channel->vflip,
+                 &channel->channels,
                  &channel->width, &channel->height, &channel->size,
                  &channel->texture);
 

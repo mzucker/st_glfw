@@ -110,6 +110,7 @@ unsigned char* get_rowptr_and_delta(buffer_t* dst,
 
 void read_jpg(const buffer_t* raw,
               int vflip,
+              size_t* pchannels,
               size_t* pwidth,
               size_t* pheight,
               size_t* psize,
@@ -174,6 +175,7 @@ void read_jpg(const buffer_t* raw,
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
 
+    *pchannels = pixel_size;
     *pwidth = width;
     *pheight = height;
     *psize = size;
@@ -210,6 +212,7 @@ void png_stream_read(png_structp png_ptr,
 
 void read_png(const buffer_t* raw,
               int vflip,
+              size_t* pchannels,
               size_t* pwidth,
               size_t* pheight,
               size_t* psize,
@@ -246,13 +249,25 @@ void read_png(const buffer_t* raw,
     int height = png_get_image_height(png_ptr, info_ptr);
     int bitdepth = png_get_bit_depth(png_ptr, info_ptr);
     int channels = png_get_channels(png_ptr, info_ptr);
+    int color_type = png_get_color_type(png_ptr, info_ptr);
 
-    if (width <= 0 || height <= 0 || bitdepth != 8 || channels != 3) {
+    const char* color_type_str = "[unknown]";
+
+#define HANDLE(x) case x: color_type_str = #x; break
+    switch (color_type) {
+        HANDLE(PNG_COLOR_TYPE_GRAY);
+        HANDLE(PNG_COLOR_TYPE_GRAY_ALPHA);
+        HANDLE(PNG_COLOR_TYPE_RGB);
+        HANDLE(PNG_COLOR_TYPE_RGB_ALPHA);
+    }
+
+    printf("PNG is %dx%dx%d, color type %s\n",
+           width, height, channels, color_type_str);
+    
+    if (width <= 0 || height <= 0 || bitdepth != 8 || (channels != 3 && channels != 4)) {
         fprintf(stderr, "invalid PNG settings!\n");
         exit(1);
     }
-
-    printf("PNG is %dx%dx%d\n", width, height, channels);
 
     int row_stride = width * channels;
     
@@ -266,6 +281,7 @@ void read_png(const buffer_t* raw,
     *pwidth = width;
     *pheight = height;
     *psize = size;
+    *pchannels = channels;
 
     buf_ensure(dst, size);
 
