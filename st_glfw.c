@@ -87,10 +87,11 @@ typedef struct channel {
 
 channel_t channels[NUM_CHANNELS];
 
-GLubyte* keymap = NULL;
-GLubyte* key_state = NULL;
-GLubyte* key_toggle = NULL;
-GLubyte* key_press = NULL;
+GLubyte keymap[KEYMAP_TOTAL_BYTES];
+
+GLubyte* key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
+GLubyte* key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
+GLubyte* key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -423,15 +424,19 @@ void setup_array() {
 
 void update_teximage(channel_t* channel) {
 
-    GLenum target;
-    int count;
+    GLenum target = GL_TEXTURE_2D;
+    int count = 1;
+    const GLubyte* src = (const GLubyte*)channel->texture.data;
 
     if (channel->ctype == CTYPE_CUBEMAP) {
+        
         target = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
         count = 6;
-    } else {
-        target = GL_TEXTURE_2D;
-        count = 1;
+        
+    } else if (channel->ctype == CTYPE_KEYBOARD) {
+        
+        src = keymap;
+                
     }
 
     GLenum format;
@@ -442,8 +447,6 @@ void update_teximage(channel_t* channel) {
         format = GL_RGB;
     }
 
-    assert( channel->texture.size == channel->size * count );
-
     for (int i=0; i<count; ++i) {
     
         if (!channel->initialized) {
@@ -452,7 +455,7 @@ void update_teximage(channel_t* channel) {
                          channel->width,
                          channel->height, 0,
                          format, GL_UNSIGNED_BYTE,
-                         channel->texture.data + i*channel->size);
+                         src + i*channel->size);
 
         } else {
 
@@ -460,7 +463,7 @@ void update_teximage(channel_t* channel) {
                             0, 0,
                             channel->width, channel->height,
                             format, GL_UNSIGNED_BYTE,
-                            channel->texture.data + i*channel->size);
+                            src + i*channel->size);
 
         }
 
@@ -536,7 +539,7 @@ void reset() {
     u_frame = 0;
     u_mouse[0] = u_mouse[1] = u_mouse[2] = u_mouse[3] = -1;
 
-    if (keymap) { memset(keymap, 0, KEYMAP_TOTAL_BYTES); }
+    memset(keymap, 0, KEYMAP_TOTAL_BYTES); 
 
     need_render = 1;
 
@@ -660,9 +663,7 @@ void render(GLFWwindow* window) {
         
     }
 
-    if (keymap) {
-        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-    }
+    memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
     
     glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -721,17 +722,7 @@ void setup_keyboard(int channel) {
     c->filter = GL_NEAREST;
     c->wrap = GL_CLAMP_TO_EDGE;
 
-    buf_grow(&(c->texture), KEYMAP_TOTAL_BYTES);
-
-    keymap = (unsigned char*)c->texture.data;
-
-    key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
-    key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
-    key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
-
     memset(keymap, 0, KEYMAP_TOTAL_BYTES);
-
-    c->texture.size = KEYMAP_TOTAL_BYTES;
 
 }
 
@@ -1211,8 +1202,8 @@ void cursor_pos_callback(GLFWwindow* window,
                          double x, double y) {
 
 
-    cur_mouse[0] = x;
-    cur_mouse[1] = window_size[1] - y;
+    cur_mouse[0] = (x) * pixel_scale[0];
+    cur_mouse[1] = (window_size[1] - y) * pixel_scale[1];
 
     if (mouse_down) {
         u_mouse[0] = cur_mouse[0];
@@ -1258,7 +1249,7 @@ void key_callback(GLFWwindow* window, int key,
             printf("saving a screenshot!\n");
             single_shot = 1;
 
-        } else if (key < 256 && keymap) {
+        } else if (key < 256) {
 
             for (int c=0; c<3; ++c) {
                 key_press[3*key+c] = 255;
@@ -1268,7 +1259,7 @@ void key_callback(GLFWwindow* window, int key,
 
         }
         
-    } else if (keymap) { // release
+    } else { 
 
         memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
         if (key_state[3*key]) {
