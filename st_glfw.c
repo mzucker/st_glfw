@@ -650,10 +650,15 @@ void key_callback(GLFWwindow* window, int key,
         } else if (key == '`' || key == '~') {
 
             animating = !animating;
+            
             if (animating == 1) {
+                printf("resumed at %f\n", u_time);
                 last_frame_start = 0;
                 glfwSetTime(0);
+            } else {
+                printf("paused at %f\n", u_time);
             }
+                
             
         } else if (key == 'S' && (mods & GLFW_MOD_ALT)) {
 
@@ -1129,7 +1134,27 @@ void setup_keyboard(int channel) {
     c->texture.size = KEYMAP_TOTAL_BYTES;
 
 }
-    
+
+//////////////////////////////////////////////////////////////////////
+
+unsigned char* get_rowptr_and_delta(buffer_t* dst,
+                                    int height, int stride,
+                                    int vflip,
+                                    int* row_delta) {
+
+    unsigned char* dstart = (unsigned char*)dst->data + dst->size;
+
+    if (vflip) {
+        *row_delta = -stride;
+        return dstart + (height-1)*stride;
+    } else {
+        *row_delta = stride;
+        return dstart;
+    }
+
+
+}
+
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1177,21 +1202,14 @@ void read_jpg(const buffer_t* raw,
         fprintf(stderr, "warning: bad stride for GL_UNPACK_ALIGNMENT!\n");
     }
         
-
     buffer_t* decoded = &(channel->texture);
     
     buf_ensure(decoded, size);
 
-    unsigned char* rowptr;
     int row_delta;
+    unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
+                                                 channel->vflip, &row_delta);
 
-    if (channel->vflip) {
-        rowptr = (unsigned char*)decoded->data + (height-1)*row_stride;
-        row_delta = -row_stride;
-    } else {
-        rowptr = (unsigned char*)decoded->data;
-        row_delta = row_stride;
-    }
 
     while (cinfo.output_scanline < cinfo.output_height) {
         
@@ -1203,7 +1221,6 @@ void read_jpg(const buffer_t* raw,
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
 
-    channel->ctype = CTYPE_TEXTURE;
     channel->width = width;
     channel->height = height;
 
@@ -1211,12 +1228,103 @@ void read_jpg(const buffer_t* raw,
 
 //////////////////////////////////////////////////////////////////////
 
+typedef struct png_simple_stream {
+
+    const unsigned char* start;
+    size_t pos;
+    size_t len;
+    
+} png_simple_stream_t;
+
+void png_stream_read(png_structp png_ptr,
+                     png_bytep data,
+                     png_size_t length) {
+
+
+    png_simple_stream_t* str = (png_simple_stream_t*)png_get_io_ptr(png_ptr);
+
+    assert( str->pos + length <= str->len );
+
+    memcpy(data, str->start + str->pos, length );
+    str->pos += length;
+
+}
+
 void read_png(const buffer_t* raw,
               channel_t* channel) {
 
-    fprintf(stderr, "png decoding not supported yet!\n");
-    exit(1);
+    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING,
+                                                 NULL, NULL, NULL);
 
+    if (!png_ptr) {
+        fprintf(stderr, "error initializing png read struct!\n");
+        exit(1);
+    }
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+
+    if (!info_ptr) {
+        fprintf(stderr, "error initializing png info struct!\n");
+        exit(1);
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        fprintf(stderr, "PNG read error!\n");
+        exit(1);
+    }
+
+    png_simple_stream_t str = { (const unsigned char*)raw->data, 0, raw->size };
+
+    png_set_read_fn(png_ptr, &str, png_stream_read);
+
+    png_set_sig_bytes(png_ptr, 0);
+    png_read_info(png_ptr, info_ptr);
+
+    int width = png_get_image_width(png_ptr, info_ptr);
+    int height = png_get_image_height(png_ptr, info_ptr);
+    int bitdepth = png_get_bit_depth(png_ptr, info_ptr);
+    int channels = png_get_channels(png_ptr, info_ptr);
+
+    if (width <= 0 || height <= 0 || bitdepth != 8 || channels != 3) {
+        fprintf(stderr, "invalid PNG settings!\n");
+        exit(1);
+    }
+
+    printf("PNG is %dx%dx%d\n", width, height, channels);
+
+    int row_stride = width * channels;
+    
+    if (row_stride % 4) {
+        fprintf(stderr, "warning: PNG data is not aligned for OpenGL!\n");
+        exit(1);
+    }
+
+    int size = row_stride * height;
+
+    channel->width = width;
+    channel->height = height;
+
+    buffer_t* decoded = &(channel->texture);
+
+    buf_ensure(decoded, size);
+
+    png_bytepp row_ptrs = malloc(height * sizeof(png_bytep));
+
+    int row_delta;
+    unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
+                                                 channel->vflip, &row_delta);
+
+    for (size_t i=0; i<height; ++i) {
+        row_ptrs[i] = rowptr;
+        rowptr += row_delta;
+    }
+
+    png_read_image(png_ptr, row_ptrs);
+
+    png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+
+    free(row_ptrs);
+    
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1229,7 +1337,6 @@ void fetch_url(const char* url, buffer_t* buf) {
         fprintf(stderr, "error initting curl!\n");
         exit(1);
     }
-
 
     buf->data = malloc(MAX_PROGRAM_LENGTH);
     buf->alloc = MAX_PROGRAM_LENGTH;
@@ -1315,14 +1422,14 @@ void load_json() {
         
         json_t* input_i = js_array(inputs, i, JSON_OBJECT);
         
-        int channel = js_object_integer(input_i, "channel");
+        int cidx = js_object_integer(input_i, "channel");
         
-        if (channel < 0 || channel >= MAX_CHANNELS) {
+        if (cidx < 0 || cidx >= MAX_CHANNELS) {
             fprintf(stderr, "invalid channel for input %d\n", i);
             exit(1);
         }
 
-        channel_t* dst_c = channels + channel;
+        channel_t* channel = channels + cidx;
 
         json_t* sampler = js_object(input_i, "sampler", JSON_OBJECT);
 
@@ -1345,16 +1452,16 @@ void load_json() {
             { 0, -1 },
         };
         
-        dst_c->filter = lookup_enum(filter_enums, 
+        channel->filter = lookup_enum(filter_enums, 
                                     js_object_string(sampler, "filter"));
 
-        dst_c->srgb = lookup_enum(tf_enums,
+        channel->srgb = lookup_enum(tf_enums,
                                   js_object_string(sampler, "srgb"));
 
-        dst_c->vflip = lookup_enum(tf_enums,
+        channel->vflip = lookup_enum(tf_enums,
                                    js_object_string(sampler, "vflip"));
 
-        dst_c->wrap = lookup_enum(wrap_enums,
+        channel->wrap = lookup_enum(wrap_enums,
                                   js_object_string(sampler, "wrap"));
         
         
@@ -1362,9 +1469,11 @@ void load_json() {
 
         if (!strcmp(ctype, "keyboard")) {
             
-            setup_keyboard(channel);
+            setup_keyboard(cidx);
             
         } else if (!strcmp(ctype, "texture")) {
+
+            channel->ctype = CTYPE_TEXTURE;
 
             const char* src = js_object_string(input_i, "src");
 
@@ -1389,11 +1498,11 @@ void load_json() {
             if (!strcasecmp(extension, "jpg") ||
                 !strcasecmp(extension, "jpeg")) {
 
-                read_jpg(&raw, dst_c);
+                read_jpg(&raw, channel);
                 
             } else if (!strcasecmp(extension, "png")) {
 
-                read_png(&raw, dst_c);
+                read_png(&raw, channel);
 
             } else {
 
@@ -1589,14 +1698,14 @@ void get_options(int argc, char** argv) {
             
         } else if (!strcmp(argv[i], "-keyboard")) {
 
-            int key_channel = getint(argc, argv, i+1);
+            int key_cidx = getint(argc, argv, i+1);
             
-            if (key_channel < 0 || key_channel >= 4) {
+            if (key_cidx < 0 || key_cidx >= 4) {
                 fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
                 exit(1);
             }
 
-            setup_keyboard(key_channel);
+            setup_keyboard(key_cidx);
 
             i += 1;
             
