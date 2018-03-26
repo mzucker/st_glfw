@@ -24,6 +24,7 @@ enum {
     
     BIG_STRING_LENGTH = 1024,
     MAX_PROGRAM_LENGTH = 1024*256,
+    MAX_FILE_LENGTH = 1024*1024*1024, // 1GB
     
     KEYMAP_ROWS = 3,
     KEYMAP_BYTES_PER_ROW = 256*3
@@ -54,10 +55,21 @@ int num_uniforms = 0;
 
 //////////////////////////////////////////////////////////////////////
 
+typedef struct buffer {
+    
+    char*  data;
+    size_t alloc;
+    size_t size;
+    
+} buffer_t;
+
 typedef struct sampler {
 
     GLenum type; // e.g. GL_SAMPLER_2D
     char name[MAX_SAMPLER_NAME_LENGTH];
+
+    buffer_t raw_buf;
+    buffer_t decoded_buf;
     
 } sampler_t;
 
@@ -136,14 +148,6 @@ const char* api_key = NULL;
 
 const char* json_input = NULL;
 json_t* json_root = NULL;
-
-typedef struct buffer {
-    
-    char*  data;
-    size_t alloc;
-    size_t size;
-    
-} buffer_t;
 
 buffer_t shader_buf = { 0, 0, 0 };
 int shader_count = 0;
@@ -870,12 +874,13 @@ void buf_read_file(buffer_t* buf, const char* filename) {
     FILE* fp = fopen(filename, "r");
     if (!fp) {
         fprintf(stderr, "error opening %s\n\n", filename);
+        exit(1);
     }
     
     fseek(fp, 0, SEEK_END);
     long fsize = ftell(fp);
 
-    if (fsize < 0 || fsize > MAX_PROGRAM_LENGTH) {
+    if (fsize < 0 || fsize > MAX_FILE_LENGTH) {
         fprintf(stderr, "file exceeds maximum size!\n\n");
         exit(1);
     }
@@ -940,6 +945,8 @@ json_t* js_object(const json_t* object,
     
 }
 
+//////////////////////////////////////////////////////////////////////
+
 json_t* js_array(const json_t* array,
                              int idx,
                              int type) {
@@ -959,6 +966,80 @@ json_t* js_array(const json_t* array,
     return j;
     
 }
+
+//////////////////////////////////////////////////////////////////////
+
+const char* get_extension(const char* filename) {
+
+    const char* extension = strrchr(filename, '.');
+    if (!extension) { return ""; }
+
+    return extension+1;
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void read_jpg(const buffer_t* raw,
+              buffer_t* decoded) {
+
+    fprintf(stderr, "jpeg decoding not supported yet!\n");
+    exit(1);
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void read_png(const buffer_t* raw,
+              buffer_t* decoded) {
+
+    fprintf(stderr, "png decoding not supported yet!\n");
+    exit(1);
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void fetch_url(const char* url, buffer_t* buf) {
+
+    CURL* curl = curl_easy_init();
+
+    if (!curl) {
+        fprintf(stderr, "error initting curl!\n");
+        exit(1);
+    }
+
+
+    buf->data = malloc(MAX_PROGRAM_LENGTH);
+    buf->alloc = MAX_PROGRAM_LENGTH;
+    buf->size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
+    
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_response);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
+
+    printf("fetching %s...\n", url);
+    
+    int status = curl_easy_perform(curl);
+
+    if (status != 0) {
+        fprintf(stderr, "curl error %s\n", curl_easy_strerror(status));
+        exit(1);
+    }
+
+    long code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+
+    if (code != 200) {
+        fprintf(stderr, "server responded with code %ld\n", code);
+        exit(1);
+    }
+
+    printf("  ...retrieved data of length %d\n", (int)buf->size);
+
+} 
 
 //////////////////////////////////////////////////////////////////////
 
@@ -998,11 +1079,53 @@ void load_json() {
         
         int channel = json_integer_value(js_object(input_i, "channel", JSON_INTEGER));
         const char* ctype = json_string_value(js_object(input_i, "ctype", JSON_STRING));
-        //const char* src = json_string_value(js_object(input_i, "src", JSON_STRING));
 
         if (!strcmp(ctype, "keyboard")) {
+            
             key_channel = channel;
             samplers[key_channel].type = GL_SAMPLER_2D;
+            
+        } else if (!strcmp(ctype, "texture")) {
+
+            const char* src = json_string_value(js_object(input_i, "src", JSON_STRING));
+
+            buffer_t* raw = &samplers[channel].raw_buf;
+            buffer_t* decoded = &samplers[channel].decoded_buf;
+
+            if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
+
+                const char* filename = src+7;
+                buf_read_file(raw, filename);            
+
+            } else {
+            
+                char url[1024];
+                snprintf(url, 1024, "http://www.shadertoy.com%s", src);
+
+                fetch_url(url, raw);
+
+            }
+
+            const char* extension = get_extension(src);
+
+            if (!strcasecmp(extension, "jpg") ||
+                !strcasecmp(extension, "jpeg")) {
+
+                read_jpg(raw, decoded);
+                
+            } else if (!strcasecmp(extension, "png")) {
+
+                read_png(raw, decoded);
+
+            } else {
+
+                fprintf(stderr, "unrecognized media extension\n");
+                exit(1);
+                    
+            }
+                
+            
+            
         } else {
             fprintf(stderr, "unsupported input type: %s\n", ctype);
             exit(1);
@@ -1029,6 +1152,7 @@ void load_json_file(const char* filename) {
 
 }
 
+
 //////////////////////////////////////////////////////////////////////
 
 void load_shadertoy(const char* id) {
@@ -1038,44 +1162,7 @@ void load_shadertoy(const char* id) {
     snprintf(url, 1024,
              "http://www.shadertoy.com/api/v1/shaders/%s?key=%s", id, api_key);
 
-
-    curl_global_init(CURL_GLOBAL_ALL);
-    CURL* curl = curl_easy_init();
-
-    if (!curl) {
-        fprintf(stderr, "error initting curl!\n");
-        exit(1);
-    }
-
-
-    json_buf.data = malloc(MAX_PROGRAM_LENGTH);
-    json_buf.alloc = MAX_PROGRAM_LENGTH;
-    json_buf.size = 0;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
-    
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_response);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_buf);
-
-    printf("fetching %s...\n", url);
-    
-    int status = curl_easy_perform(curl);
-
-    if (status != 0) {
-        fprintf(stderr, "curl error %s\n", curl_easy_strerror(status));
-        exit(1);
-    }
-
-    long code;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-
-    if (code != 200) {
-        fprintf(stderr, "server responded with code %ld\n", code);
-        exit(1);
-    }
-
-    printf("got data of length %d\n", (int)json_buf.size);
+    fetch_url(url, &json_buf);
 
     load_json();
     
@@ -1122,14 +1209,13 @@ void load_shader(const char* filename) {
 
 //////////////////////////////////////////////////////////////////////
 
+
 int is_json(const char* filename) {
 
-    const char* extension = strrchr(filename, '.');
-    if (!extension) { return 0; }
+    const char* extension = get_extension(filename);
 
-    return (strlen(extension) > 2 &&
-            tolower(extension[1]) == 'j' &&
-            tolower(extension[2]) == 's');
+    return ( !strcasecmp(extension, "js") ||
+             !strcasecmp(extension, "json") );
 
 }
 
@@ -1343,6 +1429,8 @@ void get_options(int argc, char** argv) {
 int main(int argc, char** argv) {
     
     memset(samplers, 0, sizeof(samplers));
+
+    curl_global_init(CURL_GLOBAL_ALL);
 
     get_options(argc, argv);
 
