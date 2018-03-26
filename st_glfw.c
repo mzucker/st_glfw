@@ -35,6 +35,8 @@ enum {
     
 };
 
+#define dprintf printf
+
 //////////////////////////////////////////////////////////////////////
 
 typedef void (*glUniformFloatFunc)(GLint, GLsizei, const GLfloat*);
@@ -148,6 +150,16 @@ typedef struct channel {
 
 typedef struct renderbuffer {
 
+    buffer_t shader_buf;
+    int shader_count;
+
+    const char* name;
+    int output_id;
+    
+    channel_t channels[NUM_CHANNELS];
+
+    const char* fragment_src[FRAG_SRC_NUM_SLOTS];
+
     GLuint program;
 
     GLuint vertex_buffer;
@@ -156,18 +168,12 @@ typedef struct renderbuffer {
     GLuint vao;
     
     GLuint uniform_handles[MAX_UNIFORMS];
-    const char* fragment_src[FRAG_SRC_NUM_SLOTS];
-
-    buffer_t shader_buf;
-    int shader_count;
-
-    int output_id;
-    
-    channel_t channels[NUM_CHANNELS];
     
 } renderbuffer_t;
 
 renderbuffer_t renderbuffers[MAX_RENDERBUFFERS];
+int draw_order[4] = { -1, -1, -1, -1 };
+
 int num_renderbuffers = 0;
 
 GLubyte keymap[KEYMAP_TOTAL_BYTES];
@@ -299,7 +305,6 @@ void add_uniform(const char* name,
         exit(1);
     }
 
-
     uniform_t u = { name, src, 0 };
 
     switch (type) {
@@ -362,6 +367,7 @@ void setup_shaders(renderbuffer_t* rb) {
             const char* stype = 0;
 
             switch (channel->ctype) {
+            case CTYPE_BUFFER:
             case CTYPE_TEXTURE:
             case CTYPE_KEYBOARD:
                 stype = "sampler2D";
@@ -382,7 +388,7 @@ void setup_shaders(renderbuffer_t* rb) {
                      stype, channel->name);
 
             rb->fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
-            
+
         }
         
     }
@@ -470,6 +476,7 @@ void setup_uniforms() {
 
 void update_teximage(channel_t* channel) {
 
+
     GLenum target = GL_TEXTURE_2D;
     int count = 1;
     const GLubyte* src = (const GLubyte*)channel->texture.data;
@@ -482,7 +489,14 @@ void update_teximage(channel_t* channel) {
     } else if (channel->ctype == CTYPE_KEYBOARD) {
         
         src = keymap;
-                
+                 
+    } else if (channel->ctype == CTYPE_BUFFER) {
+
+        dprintf("skipping update_teximage for buffer!\n");
+        channel->dirty = 0;
+        channel->initialized = 1;
+        return;
+        
     }
 
     GLenum format;
@@ -553,7 +567,7 @@ void setup_textures(renderbuffer_t* rb) {
             glTexParameteri(channel->target,
                             GL_TEXTURE_MAG_FILTER,
                             mag);
-            
+
             glTexParameteri(channel->target,
                             GL_TEXTURE_MIN_FILTER,
                             channel->filter);
@@ -600,6 +614,7 @@ void set_uniforms() {
     for (int j=0; j<num_renderbuffers; ++j) {
 
         renderbuffer_t* rb = renderbuffers + j;
+        glUseProgram(rb->program);
 
         for (size_t i=0; i<num_uniforms; ++i) {
             const uniform_t* u = uinfo + i;
@@ -846,6 +861,133 @@ void load_image(channel_t* channel, const char* src) {
 
 //////////////////////////////////////////////////////////////////////
 
+void load_inputs(renderbuffer_t* rb, json_t* inputs) {
+
+    int ninputs = json_array_size(inputs);
+
+    for (int i=0; i<ninputs; ++i) {
+        
+        json_t* input_i = jsarray(inputs, i, JSON_OBJECT);
+        
+        int cidx = jsobject_integer(input_i, "channel");
+        
+        if (cidx < 0 || cidx >= NUM_CHANNELS) {
+            fprintf(stderr, "invalid channel for input %d\n", i);
+            exit(1);
+        }
+
+        channel_t* channel = rb->channels + cidx;
+
+        json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
+
+        const enum_info_t filter_enums[] = {
+            { "nearest", GL_NEAREST },
+            { "mipmap", GL_LINEAR },
+            { "linear", GL_LINEAR_MIPMAP_LINEAR },
+            { 0, -1 },
+        };
+
+        const enum_info_t tf_enums[] = {
+            { "true", 1 },
+            { "false", 0 },
+            { 0, -1 },
+        };
+
+        const enum_info_t wrap_enums[] = {
+            { "clamp", GL_CLAMP_TO_EDGE },
+            { "repeat", GL_REPEAT },
+            { 0, -1 },
+        };
+        
+        channel->filter = lookup_enum(filter_enums, 
+                                      jsobject_string(sampler, "filter"));
+
+        channel->srgb = lookup_enum(tf_enums,
+                                    jsobject_string(sampler, "srgb"));
+
+        channel->vflip = lookup_enum(tf_enums,
+                                     jsobject_string(sampler, "vflip"));
+
+        channel->wrap = lookup_enum(wrap_enums,
+                                    jsobject_string(sampler, "wrap"));
+
+        channel->src_id = -1;
+
+        const char* ctype = jsobject_string(input_i, "ctype");
+
+        const char* src = jsobject_string(input_i, "src");
+        
+        if (!strcmp(ctype, "keyboard")) {
+            
+            setup_keyboard(rb, cidx);
+            
+        } else if (!strcmp(ctype, "texture")) {
+            
+            channel->target = GL_TEXTURE_2D;
+            channel->ctype = CTYPE_TEXTURE;
+            load_image(channel, src);
+
+        } else if (!strcmp(ctype, "cubemap")) {
+            
+            channel->target = GL_TEXTURE_CUBE_MAP;
+            channel->ctype = CTYPE_CUBEMAP;
+
+            const char* dot = strrchr(src, '.');
+            if (!dot) { dot = src + strlen(src); }
+
+            int base_len = dot - src;
+            int ext_len = strlen(dot);
+
+            if (base_len + ext_len + 2 > 1023) {
+                fprintf(stderr, "error: filename too long!\n");
+                exit(1);
+            }
+            
+            char base[1024];
+            memcpy(base, src, base_len);
+            base[base_len] = 0;
+
+            for (int i=0; i<6; ++i) {
+
+                const char* src_i;
+
+                if (i == 0) {
+                    src_i = src;
+                } else {
+                    int ii = i;
+                    if (channel->vflip) {
+                        if (ii == 2) { ii = 3; }
+                        else if (ii == 3) { ii = 2; }
+                    }
+                    snprintf(base + base_len, 1024-base_len, "_%d%s", ii, dot);
+                    src_i = base;
+                }
+
+                printf("loading %s\n", src_i);
+                load_image(channel, src_i);
+                
+            }
+
+        } else if (!strcmp(ctype, "buffer")) {
+
+            channel->target = GL_TEXTURE_2D;
+            channel->ctype = CTYPE_BUFFER;
+            channel->src_id = jsobject_integer(input_i, "id");
+            printf("temporarily ignoring buffer input!\n");
+            
+        } else {
+            
+            fprintf(stderr, "unsupported input type: %s\n", ctype);
+            exit(1);
+            
+        }
+        
+    }
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void load_json() {
 
     json_root = jsparse(&json_buf);
@@ -855,7 +997,7 @@ void load_json() {
 
     size_t len = json_array_size(renderpass);
 
-    json_t* image = NULL;
+    int image_index = -1;
     json_t* common = NULL;
 
     for (int i=0; i<len; ++i) {
@@ -871,7 +1013,7 @@ void load_json() {
             
         } else if (!strcmp(type, "image")) {
             
-            image = renderstep;
+            image_index = num_renderbuffers;
             
         } else if (strcmp(type, "buffer") != 0) {
 
@@ -880,11 +1022,18 @@ void load_json() {
 
         }
 
+        if (num_renderbuffers >= MAX_RENDERBUFFERS) {
+            fprintf(stderr, "maximum # render buffers exceeded!\n");
+            exit(1);
+        }
+
         renderbuffer_t* rb = renderbuffers + num_renderbuffers;
         ++num_renderbuffers;
 
         json_t* outputs = jsobject(renderstep, "outputs", JSON_ARRAY);
         int nout = json_array_size(outputs);
+
+        rb->name = jsobject_string(renderstep, "name");
         
         if (!nout) {
             
@@ -903,122 +1052,8 @@ void load_json() {
         }
 
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
-        int ninputs = json_array_size(inputs);
 
-        for (int i=0; i<ninputs; ++i) {
-        
-            json_t* input_i = jsarray(inputs, i, JSON_OBJECT);
-        
-            int cidx = jsobject_integer(input_i, "channel");
-        
-            if (cidx < 0 || cidx >= NUM_CHANNELS) {
-                fprintf(stderr, "invalid channel for input %d\n", i);
-                exit(1);
-            }
-
-            channel_t* channel = rb->channels + cidx;
-
-            json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
-
-            const enum_info_t filter_enums[] = {
-                { "nearest", GL_NEAREST },
-                { "mipmap", GL_LINEAR },
-                { "linear", GL_LINEAR_MIPMAP_LINEAR },
-                { 0, -1 },
-            };
-
-            const enum_info_t tf_enums[] = {
-                { "true", 1 },
-                { "false", 0 },
-                { 0, -1 },
-            };
-
-            const enum_info_t wrap_enums[] = {
-                { "clamp", GL_CLAMP_TO_EDGE },
-                { "repeat", GL_REPEAT },
-                { 0, -1 },
-            };
-        
-            channel->filter = lookup_enum(filter_enums, 
-                                          jsobject_string(sampler, "filter"));
-
-            channel->srgb = lookup_enum(tf_enums,
-                                        jsobject_string(sampler, "srgb"));
-
-            channel->vflip = lookup_enum(tf_enums,
-                                         jsobject_string(sampler, "vflip"));
-
-            channel->wrap = lookup_enum(wrap_enums,
-                                        jsobject_string(sampler, "wrap"));
-
-            const char* ctype = jsobject_string(input_i, "ctype");
-
-            const char* src = jsobject_string(input_i, "src");
-        
-            if (!strcmp(ctype, "keyboard")) {
-            
-                setup_keyboard(rb, cidx);
-            
-            } else if (!strcmp(ctype, "texture")) {
-            
-                channel->target = GL_TEXTURE_2D;
-                channel->ctype = CTYPE_TEXTURE;
-                load_image(channel, src);
-
-            } else if (!strcmp(ctype, "cubemap")) {
-            
-                channel->target = GL_TEXTURE_CUBE_MAP;
-                channel->ctype = CTYPE_CUBEMAP;
-
-                const char* dot = strrchr(src, '.');
-                if (!dot) { dot = src + strlen(src); }
-
-                int base_len = dot - src;
-                int ext_len = strlen(dot);
-
-                if (base_len + ext_len + 2 > 1023) {
-                    fprintf(stderr, "error: filename too long!\n");
-                    exit(1);
-                }
-            
-                char base[1024];
-                memcpy(base, src, base_len);
-                base[base_len] = 0;
-
-                for (int i=0; i<6; ++i) {
-
-                    const char* src_i;
-
-                    if (i == 0) {
-                        src_i = src;
-                    } else {
-                        int ii = i;
-                        if (channel->vflip) {
-                            if (ii == 2) { ii = 3; }
-                            else if (ii == 3) { ii = 2; }
-                        }
-                        snprintf(base + base_len, 1024-base_len, "_%d%s", ii, dot);
-                        src_i = base;
-                    }
-
-                    printf("loading %s\n", src_i);
-                    load_image(channel, src_i);
-                
-                }
-
-            } else if (!strcmp(ctype, "buffer")) {
-
-                channel->src_id = jsobject_integer(input_i, "id");
-                printf("temporarily ignoring buffer input!\n");
-            
-            } else {
-            
-                fprintf(stderr, "unsupported input type: %s\n", ctype);
-                exit(1);
-            
-            }
-        
-        }
+        load_inputs(rb, inputs);
 
         const char* code_string = jsobject_string(renderstep, "code");
 
@@ -1028,7 +1063,7 @@ void load_json() {
 
     }
     
-    if (!image) {
+    if (image_index < 0) {
         fprintf(stderr, "no image render stage in JSON!\n");
         exit(1);
     }
@@ -1043,7 +1078,6 @@ void load_json() {
         }
         
     }
-    
 
     
 }
