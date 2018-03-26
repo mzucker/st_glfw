@@ -16,6 +16,8 @@
 #include "stringutils.h"
 
 enum {
+
+    MAX_RENDERBUFFERS = 4,
     
     MAX_UNIFORMS = 16,
     
@@ -41,7 +43,6 @@ typedef void (*glUniformIntFunc)(GLint, GLsizei, const GLint*);
 typedef struct uniform {
     
     const char* name;
-    GLuint handle;
     const void* src;
     GLenum ptr_type;
 
@@ -54,6 +55,60 @@ typedef struct uniform {
 
 uniform_t uinfo[MAX_UNIFORMS];
 int num_uniforms = 0;
+
+//////////////////////////////////////////////////////////////////////
+
+const char* vertex_src[1] = {
+    "#version 150\n"
+    "in vec2 vertexPosition;\n"
+    "void main()\n"
+    "{\n"
+    "    gl_Position = vec4(vertexPosition, 0.0, 1.0);\n"
+    "}\n"
+};
+
+enum {
+    FRAG_SRC_VERSION_SLOT = 0,
+    FRAG_SRC_UNIFORMS_SLOT,
+    FRAG_SRC_CH0_SLOT,
+    FRAG_SRC_CH1_SLOT,
+    FRAG_SRC_CH2_SLOT,
+    FRAG_SRC_CH3_SLOT,
+    FRAG_SRC_MAINIMAGE_SLOT,
+    FRAG_SRC_MAIN_SLOT,
+    FRAG_SRC_NUM_SLOTS
+};
+
+const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
+
+    "#version 150\n",
+    
+    "uniform float iTime; "
+    "uniform vec3 iResolution; "
+    "uniform vec4 iMouse; "
+    "uniform float iTimeDelta; "
+    "uniform vec4 iDate; "
+    "uniform int iFrame; "
+    "float iGlobalTime; "
+    "out vec4 fragColor; ",
+
+    "", // iChannel0
+    "", // ichannel1
+    "", // ichannel2
+    "", // ichannel3
+    
+    "\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
+    "    vec2 uv = fragCoord / iResolution.xy; "
+    "    fragColor = vec4(uv,0.5+0.5*sin(iTime),1.0);"
+    "}\n",
+    
+    "\nvoid main() {\n"
+    "  iGlobalTime = iTime;\n"
+    "  mainImage(fragColor, gl_FragCoord.xy);\n"
+    "}\n"
+    
+
+};
 
 //////////////////////////////////////////////////////////////////////
 
@@ -85,7 +140,27 @@ typedef struct channel {
     
 } channel_t;
 
-channel_t channels[NUM_CHANNELS];
+typedef struct renderbuffer {
+
+    GLuint program;
+
+    GLuint vertex_buffer;
+    GLuint element_buffer;
+    
+    GLuint vao;
+    
+    GLuint uniform_handles[MAX_UNIFORMS];
+    const char* fragment_src[FRAG_SRC_NUM_SLOTS];
+
+    buffer_t shader_buf;
+    int shader_count;
+    
+    channel_t channels[NUM_CHANNELS];
+    
+} renderbuffer_t;
+
+renderbuffer_t renderbuffers[MAX_RENDERBUFFERS];
+int num_renderbuffers = 0;
 
 GLubyte keymap[KEYMAP_TOTAL_BYTES];
 
@@ -94,8 +169,6 @@ GLubyte* key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
 GLubyte* key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
 
 //////////////////////////////////////////////////////////////////////
-
-GLuint program = 0;
 
 GLfloat u_time = 0; // set this to starttime after options
 GLfloat u_resolution[3]; // set every frame
@@ -137,62 +210,7 @@ const char* api_key = NULL;
 const char* json_input = NULL;
 json_t* json_root = NULL;
 
-buffer_t shader_buf = { 0, 0, 0 };
-int shader_count = 0;
-
 buffer_t json_buf = { 0, 0, 0 };
-
-//////////////////////////////////////////////////////////////////////
-
-const char* vertex_src[1] = {
-    "#version 150\n"
-    "in vec2 vertexPosition;\n"
-    "void main()\n"
-    "{\n"
-    "    gl_Position = vec4(vertexPosition, 0.0, 1.0);\n"
-    "}\n"
-};
-
-enum {
-    FRAG_SRC_DECL_SLOT = 0,
-    FRAG_SRC_CH0_SLOT = 1,
-    FRAG_SRC_CH1_SLOT = 2,
-    FRAG_SRC_CH2_SLOT = 3,
-    FRAG_SRC_CH3_SLOT = 4,
-    FRAG_SRC_MAINIMAGE_SLOT = 5,
-    FRAG_SRC_MAIN_SLOT = 6,
-    FRAG_SRC_NUM_SLOTS = 7
-};
-
-const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
-
-    "#version 150\n"
-    "uniform float iTime; "
-    "uniform vec3 iResolution; "
-    "uniform vec4 iMouse; "
-    "uniform float iTimeDelta; "
-    "uniform vec4 iDate; "
-    "uniform int iFrame; "
-    "float iGlobalTime; "
-    "out vec4 fragColor; ",
-
-    "", // iChannel0
-    "", // ichannel1
-    "", // ichannel2
-    "", // ichannel3
-    
-    "\nvoid mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
-    "    vec2 uv = fragCoord / iResolution.xy; "
-    "    fragColor = vec4(uv,0.5+0.5*sin(iTime),1.0);"
-    "}\n",
-    
-    "void main() {\n"
-    "  iGlobalTime = iTime;\n"
-    "  mainImage(fragColor, gl_FragCoord.xy);\n"
-    "}\n"
-    
-
-};
 
 //////////////////////////////////////////////////////////////////////
 
@@ -271,9 +289,8 @@ void add_uniform(const char* name,
         exit(1);
     }
 
-    GLuint handle = glGetUniformLocation(program, name);
 
-    uniform_t u = { name, handle, src, 0 };
+    uniform_t u = { name, src, 0 };
 
     switch (type) {
     case GL_FLOAT:
@@ -301,13 +318,25 @@ void add_uniform(const char* name,
         exit(1);
     }
     
-    uinfo[num_uniforms++] = u;
+    uinfo[num_uniforms] = u;
+
+    for (int i=0; i<num_renderbuffers; ++i) {
+        
+        renderbuffer_t* rb = renderbuffers + i;
+        
+        GLuint handle = glGetUniformLocation(rb->program, name);
+
+        rb->uniform_handles[num_uniforms] = handle;
+        
+    }
+
+    ++num_uniforms;
     
 }
 
 //////////////////////////////////////////////////////////////////////
 
-void setup_shaders() {
+void setup_shaders(renderbuffer_t* rb) {
 
     GLuint vertex_shader = make_shader(GL_VERTEX_SHADER, 1,
                                        vertex_src);
@@ -316,11 +345,13 @@ void setup_shaders() {
     
     for (int i=0; i<NUM_CHANNELS; ++i) {
 
-        if (channels[i].ctype != CTYPE_NONE) {
+        channel_t* channel = rb->channels + i;
+
+        if (channel->ctype != CTYPE_NONE) {
 
             const char* stype = 0;
 
-            switch (channels[i].ctype) {
+            switch (channel->ctype) {
             case CTYPE_TEXTURE:
             case CTYPE_KEYBOARD:
                 stype = "sampler2D";
@@ -333,49 +364,45 @@ void setup_shaders() {
                 exit(1);
             }
 
-            snprintf(channels[i].name, MAX_CHANNEL_NAME_LENGTH,
+            snprintf(channel->name, MAX_CHANNEL_NAME_LENGTH,
                      "iChannel%d", i);
 
             snprintf(sbuf[i], MAX_CHANNEL_DECL_LENGTH,
                      "uniform %s %s; ",
-                     stype, channels[i].name);
+                     stype, channel->name);
 
-            fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
+            rb->fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
             
         }
         
     }
 
+    for (int i=0; i<FRAG_SRC_NUM_SLOTS; ++i) {
+        if (!rb->fragment_src[i]) {
+            rb->fragment_src[i] = default_fragment_src[i];
+        }
+    }
+
     GLuint fragment_shader = make_shader(GL_FRAGMENT_SHADER,
                                          FRAG_SRC_NUM_SLOTS,
-                                         fragment_src);
+                                         rb->fragment_src);
                                 
-    program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
+    rb->program = glCreateProgram();
+    glAttachShader(rb->program, vertex_shader);
+    glAttachShader(rb->program, fragment_shader);
+    glLinkProgram(rb->program);
 
     check_opengl_errors("after linking program");
 
-    add_uniform("iTime", &u_time, GL_FLOAT);
-    add_uniform("iResolution", u_resolution, GL_FLOAT_VEC3);
-    add_uniform("iMouse", u_mouse, GL_FLOAT_VEC4);
-    add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT);
-    add_uniform("iDate", &u_date, GL_FLOAT_VEC4);
-    add_uniform("iFrame", &u_frame, GL_INT);
 
-    check_opengl_errors("after setting up uniforms");
-
-    glUseProgram(program);
+    glUseProgram(rb->program);
     check_opengl_errors("after use program");
     
 }
 
 //////////////////////////////////////////////////////////////////////
 
-void setup_array() {
-
-    GLuint vertex_buffer;
+void setup_array(renderbuffer_t* rb) {
 
     const GLfloat vertices[4][2] = {
         { -1.f, -1.f  },
@@ -386,37 +413,46 @@ void setup_array() {
 
     GLubyte indices[] = { 0, 1, 2, 0, 2, 3 };
     
-    glGenBuffers(1, &vertex_buffer);
-    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+    glGenBuffers(1, &rb->vertex_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices),
                  vertices, GL_STATIC_DRAW);
     
     check_opengl_errors("after vertex buffer setup");
 
-
-    GLuint element_buffer;
-    glGenBuffers(1, &element_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element_buffer);
+    glGenBuffers(1, &rb->element_buffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices),
                  indices, GL_STATIC_DRAW);
     
     check_opengl_errors("after element buffer setup");
 
-    GLuint vao;
-    
-    glGenVertexArrays(1, &vao);
+    glGenVertexArrays(1, &rb->vao);
 
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element_buffer);
+    glBindVertexArray(rb->vao);
+    glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
     check_opengl_errors("after vao setup");
 
-    GLint vpos_location = glGetAttribLocation(program, "vertexPosition");
+    GLint vpos_location = glGetAttribLocation(rb->program, "vertexPosition");
     glEnableVertexAttribArray(vpos_location);
     glVertexAttribPointer(vpos_location, 2, GL_FLOAT, GL_FALSE,
                           sizeof(float) * 2, (void*) 0);
 
     check_opengl_errors("after setting up vertexPosition");
+
+}
+
+void setup_uniforms() {
+
+    add_uniform("iTime", &u_time, GL_FLOAT);
+    add_uniform("iResolution", u_resolution, GL_FLOAT_VEC3);
+    add_uniform("iMouse", u_mouse, GL_FLOAT_VEC4);
+    add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT);
+    add_uniform("iDate", &u_date, GL_FLOAT_VEC4);
+    add_uniform("iFrame", &u_frame, GL_INT);
+
+    check_opengl_errors("after setting up uniforms");
 
 }
 
@@ -482,43 +518,45 @@ void update_teximage(channel_t* channel) {
 
 //////////////////////////////////////////////////////////////////////
 
-void setup_textures() {
+void setup_textures(renderbuffer_t* rb) {
 
     for (int i=0; i<4; ++i) {
 
-        if (channels[i].ctype) {
+        channel_t* channel = rb->channels + i;
 
-            GLuint channel_loc = glGetUniformLocation(program,
-                                                      channels[i].name);
+        if (channel->ctype) {
+
+            GLuint channel_loc = glGetUniformLocation(rb->program,
+                                                      channel->name);
             
             glActiveTexture(GL_TEXTURE0 + i);
             glUniform1i(channel_loc, i);
 
-            glGenTextures(1, &channels[i].tex_id);
-            glBindTexture(GL_TEXTURE_2D, channels[i].tex_id);
+            glGenTextures(1, &channel->tex_id);
+            glBindTexture(GL_TEXTURE_2D, channel->tex_id);
             
-            int mag = channels[i].filter;
+            int mag = channel->filter;
             if (mag == GL_LINEAR_MIPMAP_LINEAR) {
                 mag = GL_LINEAR;
             }
         
-            glTexParameteri(channels[i].target,
+            glTexParameteri(channel->target,
                             GL_TEXTURE_MAG_FILTER,
                             mag);
             
-            glTexParameteri(channels[i].target,
+            glTexParameteri(channel->target,
                             GL_TEXTURE_MIN_FILTER,
-                            channels[i].filter);
+                            channel->filter);
 
-            glTexParameteri(channels[i].target,
+            glTexParameteri(channel->target,
                             GL_TEXTURE_WRAP_S,
-                            channels[i].wrap);
+                            channel->wrap);
 
-            glTexParameteri(channels[i].target,
+            glTexParameteri(channel->target,
                             GL_TEXTURE_WRAP_T,
-                            channels[i].wrap);
+                            channel->wrap);
 
-            update_teximage(&channels[i]);
+            update_teximage(channel);
 
             check_opengl_errors("after dealing with channel");
 
@@ -549,22 +587,28 @@ void reset() {
 
 void set_uniforms() {
 
-    for (size_t i=0; i<num_uniforms; ++i) {
-        const uniform_t* u = uinfo + i;
-        switch (u->ptr_type) {
-        case GL_FLOAT:
-            u->float_func(u->handle, 1, (const GLfloat*)u->src);
-            break;
-        case GL_INT:
-            u->int_func(u->handle, 1, (const GLint*)u->src);
-            break;
-        default:
-            fprintf(stderr, "invalid pointer type in set_uniforms!\n");
-            exit(1);
-        }
-        check_opengl_errors(u->name);
-    }
+    for (int j=0; j<num_renderbuffers; ++j) {
 
+        renderbuffer_t* rb = renderbuffers + j;
+
+        for (size_t i=0; i<num_uniforms; ++i) {
+            const uniform_t* u = uinfo + i;
+            switch (u->ptr_type) {
+            case GL_FLOAT:
+                u->float_func(rb->uniform_handles[i], 1, (const GLfloat*)u->src);
+                break;
+            case GL_INT:
+                u->int_func(rb->uniform_handles[i], 1, (const GLint*)u->src);
+                break;
+            default:
+                fprintf(stderr, "invalid pointer type in set_uniforms!\n");
+                exit(1);
+            }
+            check_opengl_errors(u->name);
+        }
+
+    }
+    
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -649,18 +693,26 @@ void render(GLFWwindow* window) {
     set_uniforms();
     check_opengl_errors("after set uniforms");
 
-    for (int i=0; i<NUM_CHANNELS; ++i) {
+    for (int j=0; j<num_renderbuffers; ++j) {
 
-        if (channels[i].ctype == CTYPE_NONE) { continue; }
+        renderbuffer_t* rb = renderbuffers + j;
 
-        if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
+        for (int i=0; i<NUM_CHANNELS; ++i) {
 
-            glBindTexture(channels[i].target, channels[i].tex_id);
+            channel_t* channel = rb->channels + i;
 
-            update_teximage(&channels[i]);
+            if (channel->ctype == CTYPE_NONE) { continue; }
 
-        }
+            if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
+
+                glBindTexture(channel->target, channel->tex_id);
+
+                update_teximage(channel);
+
+            }
         
+        }
+
     }
 
     memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
@@ -668,6 +720,13 @@ void render(GLFWwindow* window) {
     glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    assert( num_renderbuffers == 1 );
+    renderbuffer_t* rb = renderbuffers + 0;
+
+    glBindVertexArray(rb->vao);
+    glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
+    
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
     
     check_opengl_errors("after render");
@@ -699,28 +758,28 @@ void render(GLFWwindow* window) {
 
 //////////////////////////////////////////////////////////////////////
 
-void new_shader_source() {
+void new_shader_source(renderbuffer_t* rb) {
     
     char lineno[256];
-    snprintf(lineno, 256, "\n#line 0 %d\n", shader_count++);
-    buf_append(&shader_buf, lineno, strlen(lineno));
+    snprintf(lineno, 256, "\n#line 0 %d\n", rb->shader_count);
+    buf_append(&rb->shader_buf, lineno, strlen(lineno));
 
 }
 
 //////////////////////////////////////////////////////////////////////
 
-void setup_keyboard(int channel) {
+void setup_keyboard(renderbuffer_t* rb, int cidx) {
 
-    channel_t* c = channels + channel;
+    channel_t* channel = rb->channels + cidx;
 
-    c->target = GL_TEXTURE_2D;
-    c->ctype = CTYPE_KEYBOARD;
-    c->width = KEYMAP_BYTES_PER_ROW / 3;
-    c->height = KEYMAP_ROWS;
-    c->size = KEYMAP_TOTAL_BYTES;
+    channel->target = GL_TEXTURE_2D;
+    channel->ctype = CTYPE_KEYBOARD;
+    channel->width = KEYMAP_BYTES_PER_ROW / 3;
+    channel->height = KEYMAP_ROWS;
+    channel->size = KEYMAP_TOTAL_BYTES;
 
-    c->filter = GL_NEAREST;
-    c->wrap = GL_CLAMP_TO_EDGE;
+    channel->filter = GL_NEAREST;
+    channel->wrap = GL_CLAMP_TO_EDGE;
 
     memset(keymap, 0, KEYMAP_TOTAL_BYTES);
 
@@ -784,12 +843,35 @@ void load_json() {
     json_t* renderpass = jsobject(shader, "renderpass", JSON_ARRAY);
 
     size_t len = json_array_size(renderpass);
-    if (len != 1) {
-        fprintf(stderr, "multipass not yet implemented!\n");
+
+    json_t* image = NULL;
+    json_t* common = NULL;
+
+    for (int i=0; i<len; ++i) {
+
+        json_t* renderstep = jsarray(renderpass, i, JSON_OBJECT);
+
+        const char* type = jsobject_string(renderstep, "type");
+
+        if (!strcmp(type, "image")) {
+            image = renderstep;
+        } else if (!strcmp(type, "common")) {
+            common = renderstep;
+        } else {
+            fprintf(stderr, "render stage of type %s not yet supported!\n",
+                    type);
+            exit(1);
+        }
+
+    }
+
+    if (!image) {
+        fprintf(stderr, "no image render stage in JSON!\n");
         exit(1);
     }
 
-    json_t* image = jsarray(renderpass, len-1, JSON_OBJECT);
+    assert( num_renderbuffers == 1 );
+    renderbuffer_t* rb = renderbuffers + 0;
 
     json_t* inputs = jsobject(image, "inputs", JSON_ARRAY);
     int ninputs = json_array_size(inputs);
@@ -805,7 +887,7 @@ void load_json() {
             exit(1);
         }
 
-        channel_t* channel = channels + cidx;
+        channel_t* channel = rb->channels + cidx;
 
         json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
 
@@ -846,7 +928,7 @@ void load_json() {
         
         if (!strcmp(ctype, "keyboard")) {
             
-            setup_keyboard(cidx);
+            setup_keyboard(rb, cidx);
             
         } else if (!strcmp(ctype, "texture")) {
             
@@ -903,12 +985,24 @@ void load_json() {
         }
         
     }
+
+    if (common) {
+        
+        new_shader_source(rb);
+        const char* code_string = jsobject_string(common, "code");
+
+        new_shader_source(rb);
+        buf_append(&rb->shader_buf, code_string, strlen(code_string));
+        rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
+        
+    }
     
     const char* code_string = jsobject_string(image, "code");
 
-    new_shader_source();
-    buf_append(&shader_buf, code_string, strlen(code_string));
-    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
+    new_shader_source(rb);
+    buf_append(&rb->shader_buf, code_string, strlen(code_string));
+    rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
+
     
 }
 
@@ -1035,7 +1129,8 @@ void get_options(int argc, char** argv) {
                 exit(1);
             }
 
-            setup_keyboard(key_cidx);
+            assert(num_renderbuffers == 1);
+            setup_keyboard(renderbuffers + 0, key_cidx);
 
             i += 1;
             
@@ -1145,10 +1240,13 @@ void get_options(int argc, char** argv) {
                 load_json();
                 
             } else {
+
+                assert( num_renderbuffers == 1 );
+                renderbuffer_t* rb = renderbuffers + 0;
                 
-                new_shader_source();
-                buf_read_file(&shader_buf, filename, MAX_FILE_LENGTH);
-                fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
+                new_shader_source(rb);
+                buf_read_file(&rb->shader_buf, filename, MAX_FILE_LENGTH);
+                rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
                 
             }
         }
@@ -1334,18 +1432,23 @@ GLFWwindow* setup_window() {
 
 int main(int argc, char** argv) {
     
-    memset(channels, 0, sizeof(channels));
-
+    memset(renderbuffers, 0, sizeof(renderbuffers));
+    
+    num_renderbuffers = 1; // hardcode this for now
+    
     get_options(argc, argv);
 
     GLFWwindow* window = setup_window();
 
-    setup_shaders();
+    for (int i=0; i<num_renderbuffers; ++i) {
+        renderbuffer_t* rb = renderbuffers + i;
+        setup_shaders(rb);
+        setup_array(rb);
+        setup_textures(rb);
+    }
 
-    setup_array();
-
-    setup_textures();
-
+    setup_uniforms();
+    
     reset();
 
     while (!glfwWindowShouldClose(window)) {
@@ -1370,10 +1473,21 @@ int main(int argc, char** argv) {
     glfwTerminate();
 
     buf_free(&json_buf);
-    buf_free(&shader_buf);
 
-    for (int i=0; i<NUM_CHANNELS; ++i) {
-        buf_free(&channels[i].texture);
+    for (int j=0; j<num_renderbuffers; ++j) {
+        
+        renderbuffer_t* rb = renderbuffers + j;
+        
+        buf_free(&rb->shader_buf);
+        
+        for (int i=0; i<NUM_CHANNELS; ++i) {
+            
+            channel_t* channel = rb->channels + i;
+            
+            buf_free(&channel->texture);
+            
+        }
+        
     }
     
     if (json_root) { json_decref(json_root); }
