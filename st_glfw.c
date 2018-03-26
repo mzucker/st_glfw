@@ -553,7 +553,7 @@ void key_callback(GLFWwindow* window, int key,
         
         if (key == GLFW_KEY_ESCAPE) {
             
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+            glfwSetWindowShouldClose(window, GL_TRUE);
             
         } else if (key == GLFW_KEY_BACKSPACE ||
                    key == GLFW_KEY_DELETE) {
@@ -653,10 +653,12 @@ GLFWwindow* setup_window() {
 
     glfwSetErrorCallback(error_callback);
 
+#ifdef __APPLE__    
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
+#endif
     
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
                                           "Shadertoy GLFW", NULL, NULL);
