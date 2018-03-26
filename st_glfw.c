@@ -69,6 +69,7 @@ const char* vertex_src[1] = {
 
 enum {
     FRAG_SRC_VERSION_SLOT = 0,
+    FRAG_SRC_COMMON_SLOT,
     FRAG_SRC_UNIFORMS_SLOT,
     FRAG_SRC_CH0_SLOT,
     FRAG_SRC_CH1_SLOT,
@@ -81,7 +82,9 @@ enum {
 
 const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
-    "#version 150\n",
+    "#version 150\n#line 0 0\n",
+    
+    "",
     
     "uniform float iTime; "
     "uniform vec3 iResolution; "
@@ -760,8 +763,11 @@ void render(GLFWwindow* window) {
 
 void new_shader_source(renderbuffer_t* rb) {
     
+    ++rb->shader_count;
+
     char lineno[256];
     snprintf(lineno, 256, "\n#line 0 %d\n", rb->shader_count);
+    
     buf_append(&rb->shader_buf, lineno, strlen(lineno));
 
 }
@@ -853,155 +859,162 @@ void load_json() {
 
         const char* type = jsobject_string(renderstep, "type");
 
-        if (!strcmp(type, "image")) {
-            image = renderstep;
-        } else if (!strcmp(type, "common")) {
+        if (!strcmp(type, "common")) {
+            
             common = renderstep;
-        } else {
-            fprintf(stderr, "render stage of type %s not yet supported!\n",
-                    type);
+            break;
+            
+        } else if (!strcmp(type, "image")) {
+            
+            image = renderstep;
+            
+        } else if (strcmp(type, "buffer") != 0) {
+
+            fprintf(stderr, "render step type %s not supported yet!\n", type);
             exit(1);
+
         }
 
-    }
+        renderbuffer_t* rb = renderbuffers + num_renderbuffers;
+        ++num_renderbuffers;
 
-    if (!image) {
-        fprintf(stderr, "no image render stage in JSON!\n");
-        exit(1);
-    }
+        json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
+        int ninputs = json_array_size(inputs);
 
-    assert( num_renderbuffers == 1 );
-    renderbuffer_t* rb = renderbuffers + 0;
-
-    json_t* inputs = jsobject(image, "inputs", JSON_ARRAY);
-    int ninputs = json_array_size(inputs);
-
-    for (int i=0; i<ninputs; ++i) {
+        for (int i=0; i<ninputs; ++i) {
         
-        json_t* input_i = jsarray(inputs, i, JSON_OBJECT);
+            json_t* input_i = jsarray(inputs, i, JSON_OBJECT);
         
-        int cidx = jsobject_integer(input_i, "channel");
+            int cidx = jsobject_integer(input_i, "channel");
         
-        if (cidx < 0 || cidx >= NUM_CHANNELS) {
-            fprintf(stderr, "invalid channel for input %d\n", i);
-            exit(1);
-        }
-
-        channel_t* channel = rb->channels + cidx;
-
-        json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
-
-        const enum_info_t filter_enums[] = {
-            { "nearest", GL_NEAREST },
-            { "mipmap", GL_LINEAR },
-            { "linear", GL_LINEAR_MIPMAP_LINEAR },
-            { 0, -1 },
-        };
-
-        const enum_info_t tf_enums[] = {
-            { "true", 1 },
-            { "false", 0 },
-            { 0, -1 },
-        };
-
-        const enum_info_t wrap_enums[] = {
-            { "clamp", GL_CLAMP_TO_EDGE },
-            { "repeat", GL_REPEAT },
-            { 0, -1 },
-        };
-        
-        channel->filter = lookup_enum(filter_enums, 
-                                    jsobject_string(sampler, "filter"));
-
-        channel->srgb = lookup_enum(tf_enums,
-                                  jsobject_string(sampler, "srgb"));
-
-        channel->vflip = lookup_enum(tf_enums,
-                                   jsobject_string(sampler, "vflip"));
-
-        channel->wrap = lookup_enum(wrap_enums,
-                                  jsobject_string(sampler, "wrap"));
-
-        const char* ctype = jsobject_string(input_i, "ctype");
-
-        const char* src = jsobject_string(input_i, "src");
-        
-        if (!strcmp(ctype, "keyboard")) {
-            
-            setup_keyboard(rb, cidx);
-            
-        } else if (!strcmp(ctype, "texture")) {
-            
-            channel->target = GL_TEXTURE_2D;
-            channel->ctype = CTYPE_TEXTURE;
-            load_image(channel, src);
-
-        } else if (!strcmp(ctype, "cubemap")) {
-            
-            channel->target = GL_TEXTURE_CUBE_MAP;
-            channel->ctype = CTYPE_CUBEMAP;
-
-            const char* dot = strrchr(src, '.');
-            if (!dot) { dot = src + strlen(src); }
-
-            int base_len = dot - src;
-            int ext_len = strlen(dot);
-
-            if (base_len + ext_len + 2 > 1023) {
-                fprintf(stderr, "error: filename too long!\n");
+            if (cidx < 0 || cidx >= NUM_CHANNELS) {
+                fprintf(stderr, "invalid channel for input %d\n", i);
                 exit(1);
             }
+
+            channel_t* channel = rb->channels + cidx;
+
+            json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
+
+            const enum_info_t filter_enums[] = {
+                { "nearest", GL_NEAREST },
+                { "mipmap", GL_LINEAR },
+                { "linear", GL_LINEAR_MIPMAP_LINEAR },
+                { 0, -1 },
+            };
+
+            const enum_info_t tf_enums[] = {
+                { "true", 1 },
+                { "false", 0 },
+                { 0, -1 },
+            };
+
+            const enum_info_t wrap_enums[] = {
+                { "clamp", GL_CLAMP_TO_EDGE },
+                { "repeat", GL_REPEAT },
+                { 0, -1 },
+            };
+        
+            channel->filter = lookup_enum(filter_enums, 
+                                          jsobject_string(sampler, "filter"));
+
+            channel->srgb = lookup_enum(tf_enums,
+                                        jsobject_string(sampler, "srgb"));
+
+            channel->vflip = lookup_enum(tf_enums,
+                                         jsobject_string(sampler, "vflip"));
+
+            channel->wrap = lookup_enum(wrap_enums,
+                                        jsobject_string(sampler, "wrap"));
+
+            const char* ctype = jsobject_string(input_i, "ctype");
+
+            const char* src = jsobject_string(input_i, "src");
+        
+            if (!strcmp(ctype, "keyboard")) {
             
-            char base[1024];
-            memcpy(base, src, base_len);
-            base[base_len] = 0;
+                setup_keyboard(rb, cidx);
+            
+            } else if (!strcmp(ctype, "texture")) {
+            
+                channel->target = GL_TEXTURE_2D;
+                channel->ctype = CTYPE_TEXTURE;
+                load_image(channel, src);
 
-            for (int i=0; i<6; ++i) {
+            } else if (!strcmp(ctype, "cubemap")) {
+            
+                channel->target = GL_TEXTURE_CUBE_MAP;
+                channel->ctype = CTYPE_CUBEMAP;
 
-                const char* src_i;
+                const char* dot = strrchr(src, '.');
+                if (!dot) { dot = src + strlen(src); }
 
-                if (i == 0) {
-                    src_i = src;
-                } else {
-                    int ii = i;
-                    if (channel->vflip) {
-                        if (ii == 2) { ii = 3; }
-                        else if (ii == 3) { ii = 2; }
-                    }
-                    snprintf(base + base_len, 1024-base_len, "_%d%s", ii, dot);
-                    src_i = base;
+                int base_len = dot - src;
+                int ext_len = strlen(dot);
+
+                if (base_len + ext_len + 2 > 1023) {
+                    fprintf(stderr, "error: filename too long!\n");
+                    exit(1);
                 }
+            
+                char base[1024];
+                memcpy(base, src, base_len);
+                base[base_len] = 0;
 
-                printf("loading %s\n", src_i);
-                load_image(channel, src_i);
+                for (int i=0; i<6; ++i) {
+
+                    const char* src_i;
+
+                    if (i == 0) {
+                        src_i = src;
+                    } else {
+                        int ii = i;
+                        if (channel->vflip) {
+                            if (ii == 2) { ii = 3; }
+                            else if (ii == 3) { ii = 2; }
+                        }
+                        snprintf(base + base_len, 1024-base_len, "_%d%s", ii, dot);
+                        src_i = base;
+                    }
+
+                    printf("loading %s\n", src_i);
+                    load_image(channel, src_i);
                 
+                }
+            
+            } else {
+            
+                fprintf(stderr, "unsupported input type: %s\n", ctype);
+                exit(1);
+            
             }
-            
-        } else {
-            
-            fprintf(stderr, "unsupported input type: %s\n", ctype);
-            exit(1);
-            
+        
         }
-        
-    }
 
-    if (common) {
-        
-        new_shader_source(rb);
-        const char* code_string = jsobject_string(common, "code");
+        const char* code_string = jsobject_string(renderstep, "code");
 
         new_shader_source(rb);
         buf_append(&rb->shader_buf, code_string, strlen(code_string));
         rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
+
+    }
+    
+    if (!image) {
+        fprintf(stderr, "no image render stage in JSON!\n");
+        exit(1);
+    }
+    
+    if (common) {
+        
+        const char* code_string = jsobject_string(common, "code");
+
+        for (int i=0; i<num_renderbuffers; ++i) {
+            renderbuffer_t* rb = renderbuffers + i;
+            rb->fragment_src[FRAG_SRC_COMMON_SLOT] = code_string;
+        }
         
     }
     
-    const char* code_string = jsobject_string(image, "code");
-
-    new_shader_source(rb);
-    buf_append(&rb->shader_buf, code_string, strlen(code_string));
-    rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
 
     
 }
@@ -1359,7 +1372,6 @@ void key_callback(GLFWwindow* window, int key,
             }
 
             last_key = key;
-            printf("press %d\n", key);
 
         }
         
@@ -1370,8 +1382,6 @@ void key_callback(GLFWwindow* window, int key,
             key_press[3*key+c] = 0;
         }
 
-        printf("release %d\n", key);
-        
     }
 
     need_render = 1;
@@ -1439,8 +1449,6 @@ GLFWwindow* setup_window() {
 int main(int argc, char** argv) {
     
     memset(renderbuffers, 0, sizeof(renderbuffers));
-    
-    num_renderbuffers = 1; // hardcode this for now
     
     get_options(argc, argv);
 
