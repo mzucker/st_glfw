@@ -960,7 +960,7 @@ void load_json() {
 
     json_error_t error;
 
-    json_root = json_loads(json_buf.data, 0, &error);
+    json_root = json_loadb(json_buf.data, json_buf.size, 0, &error);
 
     if (!json_root) {
         fprintf(stderr, "error: on line %d: %s\n", error.line, error.text);
@@ -1264,6 +1264,11 @@ void get_options(int argc, char** argv) {
             
             api_key = argv[i+1];
             i += 1;
+
+        } else if (argv[i][0] == '-' && !force_files) {
+
+            fprintf(stderr, "error: unrecognized switch %s\n", argv[i]);
+            dieusage();
             
         } else {
             
