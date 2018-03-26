@@ -8,8 +8,7 @@
 #include <math.h>
 #include <ctype.h>
 
-#include <assert.h>
-
+#include "require.h"
 #include "buffer.h"
 #include "image.h"
 #include "www.h"
@@ -743,7 +742,7 @@ void render(GLFWwindow* window) {
     glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    assert( num_renderbuffers == 1 );
+    require( num_renderbuffers == 1 );
     renderbuffer_t* rb = renderbuffers + 0;
 
     glBindVertexArray(rb->vao);
@@ -1205,7 +1204,7 @@ void get_options(int argc, char** argv) {
                 exit(1);
             }
 
-            assert(num_renderbuffers == 1);
+            require(num_renderbuffers == 1);
             setup_keyboard(renderbuffers + 0, key_cidx);
 
             i += 1;
@@ -1317,7 +1316,7 @@ void get_options(int argc, char** argv) {
                 
             } else {
 
-                assert( num_renderbuffers == 1 );
+                require( num_renderbuffers == 1 );
                 renderbuffer_t* rb = renderbuffers + 0;
                 
                 new_shader_source(rb);

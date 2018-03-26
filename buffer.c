@@ -1,5 +1,5 @@
 #include "buffer.h"
-#include <assert.h>
+#include "require.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -23,7 +23,7 @@ void buf_grow(buffer_t* buf, size_t len) {
 
     }
 
-    assert(buf->alloc >= new_size);
+    require(buf->alloc >= new_size);
 
 }
 

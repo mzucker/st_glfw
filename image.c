@@ -1,8 +1,9 @@
 #include "image.h"
+#include "require.h"
+
 #include <stdio.h>
 #include <png.h>
 #include <jpeglib.h>
-#include <assert.h>
 #include <string.h>
 
 int write_png(const char* filename,
@@ -201,7 +202,7 @@ void png_stream_read(png_structp png_ptr,
 
     png_simple_stream_t* str = (png_simple_stream_t*)png_get_io_ptr(png_ptr);
 
-    assert( str->pos + length <= str->len );
+    require( str->pos + length <= str->len );
 
     memcpy(data, str->start + str->pos, length );
     str->pos += length;
