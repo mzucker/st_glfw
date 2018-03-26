@@ -5,26 +5,20 @@
 #include <string.h>
 #include <sys/time.h>
 #include <math.h>
-#include <png.h>
-#include <jpeglib.h>
 #include <ctype.h>
-
-#include <jansson.h>
-#include <curl/curl.h>
-
-#ifdef NDEBUG
-#undef NDEBUG
-#endif
 
 #include <assert.h>
 
-//////////////////////////////////////////////////////////////////////
+#include "buffer.h"
+#include "image.h"
+#include "www.h"
+#include "stringutils.h"
 
 enum {
     
     MAX_UNIFORMS = 16,
     
-    MAX_CHANNELS = 4,
+    NUM_CHANNELS = 4,
     MAX_CHANNEL_NAME_LENGTH = 16,
     MAX_CHANNEL_DECL_LENGTH = 64,
     
@@ -62,21 +56,6 @@ int num_uniforms = 0;
 
 //////////////////////////////////////////////////////////////////////
 
-typedef struct enum_info {
-    const char* string;
-    int value;
-} enum_info_t;
-
-//////////////////////////////////////////////////////////////////////
-
-typedef struct buffer {
-    
-    char*  data;
-    size_t alloc;
-    size_t size;
-    
-} buffer_t;
-
 typedef enum texture_ctype {
     CTYPE_NONE = 0,
     CTYPE_TEXTURE = 1,
@@ -88,7 +67,6 @@ typedef struct channel {
 
     texture_ctype_t ctype;
     char name[MAX_CHANNEL_NAME_LENGTH];
-    int width, height, size;
 
     GLuint target;
     GLuint tex_id;
@@ -98,6 +76,7 @@ typedef struct channel {
     int vflip;
     int wrap;
 
+    size_t width, height, size;
     buffer_t texture;
 
     int dirty;
@@ -105,13 +84,9 @@ typedef struct channel {
     
 } channel_t;
 
-channel_t channels[MAX_CHANNELS];
-
-//////////////////////////////////////////////////////////////////////
-
+channel_t channels[NUM_CHANNELS];
 
 GLubyte* keymap = NULL;
-
 GLubyte* key_state = NULL;
 GLubyte* key_toggle = NULL;
 GLubyte* key_press = NULL;
@@ -154,6 +129,19 @@ int mouse_down = 0;
 
 //////////////////////////////////////////////////////////////////////
 
+const char* shadertoy_id = NULL;
+const char* api_key = NULL;
+
+const char* json_input = NULL;
+json_t* json_root = NULL;
+
+buffer_t shader_buf = { 0, 0, 0 };
+int shader_count = 0;
+
+buffer_t json_buf = { 0, 0, 0 };
+
+//////////////////////////////////////////////////////////////////////
+
 const char* vertex_src[1] = {
     "#version 150\n"
     "in vec2 vertexPosition;\n"
@@ -173,17 +161,6 @@ enum {
     FRAG_SRC_MAIN_SLOT = 6,
     FRAG_SRC_NUM_SLOTS = 7
 };
-
-const char* shadertoy_id = NULL;
-const char* api_key = NULL;
-
-const char* json_input = NULL;
-json_t* json_root = NULL;
-
-buffer_t shader_buf = { 0, 0, 0 };
-int shader_count = 0;
-
-buffer_t json_buf = { 0, 0, 0 };
 
 const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
@@ -251,6 +228,38 @@ void check_opengl_errors(const char* context) {
 
 //////////////////////////////////////////////////////////////////////
 
+GLuint make_shader(GLenum type,
+                   GLint count,
+                   const char** srcs) {
+
+    GLint length[count];
+
+    for (GLint i=0; i<count; ++i) {
+        length[i] = strlen(srcs[i]);
+    }
+
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, count, srcs, length);
+    glCompileShader(shader);
+  
+    GLint status;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+
+    if (!status) {
+        char buf[4096];
+        glGetShaderInfoLog(shader, sizeof(buf), NULL, buf);
+        fprintf(stderr, "error compiling %s shader:\n\n%s\n",
+                type == GL_VERTEX_SHADER ? "vertex" : "fragment",
+                buf);
+        exit(1);
+    }
+
+    return shader;
+  
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void add_uniform(const char* name,
                  const void* src,
                  GLenum type) {
@@ -297,516 +306,14 @@ void add_uniform(const char* name,
 
 //////////////////////////////////////////////////////////////////////
 
-void set_uniforms() {
-
-    for (size_t i=0; i<num_uniforms; ++i) {
-        const uniform_t* u = uinfo + i;
-        switch (u->ptr_type) {
-        case GL_FLOAT:
-            u->float_func(u->handle, 1, (const GLfloat*)u->src);
-            break;
-        case GL_INT:
-            u->int_func(u->handle, 1, (const GLint*)u->src);
-            break;
-        default:
-            fprintf(stderr, "invalid pointer type in set_uniforms!\n");
-            exit(1);
-        }
-        check_opengl_errors(u->name);
-    }
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-int quick_png(const char* filename,
-              const unsigned char* data, 
-              size_t ncols,
-              size_t nrows,
-              size_t rowsz,
-              int yflip) {
-
-
-    FILE* fp = fopen(filename, "wb");
-    if (!fp) {
-        fprintf(stderr, "error opening %s for output\n", filename);
-        return 0;
-    }
-  
-    png_structp png_ptr = png_create_write_struct
-        (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-
-    if (!png_ptr) {
-        fprintf(stderr, "error creating write struct\n");
-        fclose(fp);
-        return 0;
-    }
-  
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (!info_ptr) {
-        fprintf(stderr, "error creating info struct\n");
-        png_destroy_write_struct(&png_ptr, (png_infopp)NULL);
-        fclose(fp);
-        return 0;
-    }  
-
-    if (setjmp(png_jmpbuf(png_ptr))) {
-        fprintf(stderr, "error processing PNG\n");
-        png_destroy_write_struct(&png_ptr, &info_ptr);
-        fclose(fp);
-        return 0;
-    }
-
-    png_init_io(png_ptr, fp);
-
-    png_set_IHDR(png_ptr, info_ptr, 
-                 ncols, nrows,
-                 8, 
-                 PNG_COLOR_TYPE_RGB,
-                 PNG_INTERLACE_NONE,
-                 PNG_COMPRESSION_TYPE_DEFAULT,
-                 PNG_FILTER_TYPE_DEFAULT);
-
-    const float base_res = 72./.0254;
-  
-    int res_x = base_res * u_pixel_scale[0];
-    int res_y = base_res * u_pixel_scale[1];
-
-    png_set_pHYs(png_ptr, info_ptr,
-                 res_x, res_y,
-                 PNG_RESOLUTION_METER);
-
-    png_write_info(png_ptr, info_ptr);
-
-    const unsigned char* rowptr = data + (yflip ? rowsz*(nrows-1) : 0);
-    int rowdelta = rowsz * (yflip ? -1 : 1);
-
-    for (size_t y=0; y<nrows; ++y) {
-        png_write_row(png_ptr, (png_bytep)rowptr);
-        rowptr += rowdelta;
-    }
-
-    png_write_end(png_ptr, info_ptr);
-    png_destroy_write_struct(&png_ptr, &info_ptr);
-    fclose(fp);
-
-    fprintf(stderr, "wrote %s\n", filename);
-
-    return 1;
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void screenshot() {
-    
-    glFinish();
-
-    int w = framebuffer_size[0];
-    int h = framebuffer_size[1];
-
-    int stride = w*3;
-
-    int align;
-    glGetIntegerv(GL_PACK_ALIGNMENT, &align);
-
-    printf("alignment is %d\n", align);
-
-    if (stride % align) {
-        stride += align - stride % align;
-    }
-
-    unsigned char* screen = (unsigned char*)malloc(h*stride);
-  
-    if (!screen) {
-        fprintf(stderr, "out of memory allocating screen!\n");
-        exit(1);
-    }
-  
-    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, screen);
-  
-    char buf[BIG_STRING_LENGTH];
-    snprintf(buf, BIG_STRING_LENGTH, "frame%04d.png", png_frame++);
-  
-    quick_png(buf, screen, w, h, stride, 1);
-    free(screen);
-  
-    if (single_shot) {
-        single_shot = 0;
-    }
-  
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void reset() {
-
-    glfwSetTime(0.0);
-    last_frame_start = 0;
-    u_time = starttime;
-    u_time_delta = 0;
-    u_frame = 0;
-    u_mouse[0] = u_mouse[1] = u_mouse[2] = u_mouse[3] = -1;
-
-    if (keymap) { memset(keymap, 0, KEYMAP_TOTAL_BYTES); }
-
-    need_render = 1;
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void update_teximage(channel_t* channel) {
-
-    GLenum target;
-    int count;
-
-    if (channel->ctype == CTYPE_CUBEMAP) {
-        target = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
-        count = 6;
-    } else {
-        target = GL_TEXTURE_2D;
-        count = 1;
-    }
-
-    assert( channel->texture.size == channel->size * count );
-
-    for (int i=0; i<count; ++i) {
-    
-        if (!channel->initialized) {
-
-            glTexImage2D(target + i, 0, GL_RGB,
-                         channel->width,
-                         channel->height, 0,
-                         GL_RGB, GL_UNSIGNED_BYTE,
-                         channel->texture.data + i*channel->size);
-
-        } else {
-
-            glTexSubImage2D(target + i, 0,
-                            0, 0,
-                            channel->width, channel->height,
-                            GL_RGB, GL_UNSIGNED_BYTE,
-                            channel->texture.data + i*channel->size);
-
-        }
-
-    }
-
-    if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
-
-        glGenerateMipmap(channel->target);
-                
-    }
-
-    channel->initialized = 1;
-    channel->dirty = 0;
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void render(GLFWwindow* window) {
-
-    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
-
-    for (int i=0; i<2; ++i) {
-        float denom = window_size[i] ? window_size[i] : 1;
-        u_pixel_scale[i] = framebuffer_size[i] / denom;
-    }
-
-    double frame_start = glfwGetTime();
-
-    if (0) {
-        printf("about to render, time=%f, since last=%f, delta=%f, target=%f\n",
-               u_time, (frame_start - last_frame_start), u_time_delta,
-               target_frame_duration);
-    }
-    
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
-    time_t time = tv.tv_sec;
-    struct tm* ltime = localtime(&time);
-  
-    u_date[0] = ltime->tm_year + 1900.f;
-    u_date[1] = ltime->tm_mon;
-    u_date[2] = ltime->tm_mday;
-    u_date[3] = ( ((ltime->tm_hour * 60.f) + ltime->tm_min) * 60.f +
-                  ltime->tm_sec + tv.tv_usec * 1e-6f );
-
-    u_resolution[0] = framebuffer_size[0] / u_pixel_scale[0];
-    u_resolution[1] = framebuffer_size[1] / u_pixel_scale[1];
-    u_resolution[2] = 1.f;
-
-    check_opengl_errors("before set uniforms");
-    
-    set_uniforms();
-    check_opengl_errors("after set uniforms");
-
-    for (int i=0; i<MAX_CHANNELS; ++i) {
-
-        if (channels[i].ctype == CTYPE_NONE) { continue; }
-
-        if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
-
-            glBindTexture(channels[i].target, channels[i].tex_id);
-
-            update_teximage(&channels[i]);
-
-        }
-        
-    }
-
-    if (keymap) {
-        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-    }
-    
-    glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
-    
-    check_opengl_errors("after render");
-
-    if (recording || single_shot) {
-        screenshot();
-    }
-    
-    glfwSwapBuffers(window);
-
-    double frame_end = glfwGetTime();
-    u_time_delta = frame_end - frame_start;
-    
-    u_frame += 1;
-
-    if (recording) {
-        u_time += target_frame_duration*speedup;
-    } else if (animating) {
-        u_time += (frame_start - last_frame_start)*speedup;
-    }
-    
-    last_frame_start = frame_start;
-    need_render = 0;
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void error_callback(int error, const char* description) {
-    fprintf(stderr, "GLFW error: %s\n", description);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void mouse_button_callback(GLFWwindow* window,
-                           int button, int action, int mods) {
-
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-
-        if (action == GLFW_PRESS) {
-            
-            u_mouse[0] = cur_mouse[0];
-            u_mouse[1] = cur_mouse[1];
-            
-            u_mouse[2] = cur_mouse[0];
-            u_mouse[3] = cur_mouse[1];
-            
-            mouse_down = 1;
-            
-        } else {
-            
-            u_mouse[2] = -u_mouse[2];
-            u_mouse[3] = -u_mouse[3];
-            
-            mouse_down = 0;
-            
-        }
-        
-        need_render = 1;
-        
-    }
-
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void cursor_pos_callback(GLFWwindow* window,
-                         double x, double y) {
-
-
-    cur_mouse[0] = x;
-    cur_mouse[1] = window_size[1] - y;
-
-    if (mouse_down) {
-        u_mouse[0] = cur_mouse[0];
-        u_mouse[1] = cur_mouse[1];
-        need_render = 1;
-    }
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void key_callback(GLFWwindow* window, int key,
-                  int scancode, int action, int mods) {
-
-    key = toupper(key);
-
-    if (action == GLFW_PRESS) {
-        
-        if (key == GLFW_KEY_ESCAPE) {
-            
-            glfwSetWindowShouldClose(window, GL_TRUE);
-            
-        } else if (key == GLFW_KEY_BACKSPACE ||
-                   key == GLFW_KEY_DELETE) {
-
-            reset();
-            
-        } else if (key == '`' || key == '~') {
-
-            animating = !animating;
-            
-            if (animating == 1) {
-                printf("resumed at %f\n", u_time);
-                last_frame_start = 0;
-                glfwSetTime(0);
-            } else {
-                printf("paused at %f\n", u_time);
-            }
-                
-            
-        } else if (key == 'S' && (mods & GLFW_MOD_ALT)) {
-
-            printf("saving a screenshot!\n");
-            single_shot = 1;
-
-        } else if (key < 256 && keymap) {
-
-            for (int c=0; c<3; ++c) {
-                key_press[3*key+c] = 255;
-                key_toggle[3*key+c] = ~key_toggle[3*key+c];
-                key_state[3*key+c] = 255;
-            }
-
-        }
-        
-    } else if (keymap) { // release
-
-        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-        if (key_state[3*key]) {
-            for (int c=0; c<3; ++c) {
-                key_state[3*key+c] = 0;
-            }
-        }
-
-    }
-
-    need_render = 1;
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void window_size_callback(GLFWwindow* window,
-                          int w, int h) {
-
-    window_size[0] = w;
-    window_size[1] = h;
-
-    render(window);
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-GLuint make_shader(GLenum type,
-                   GLint count,
-                   const char** srcs) {
-
-    GLint length[count];
-
-    for (GLint i=0; i<count; ++i) {
-        length[i] = strlen(srcs[i]);
-    }
-
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, count, srcs, length);
-    glCompileShader(shader);
-  
-    GLint status;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-
-    if (!status) {
-        char buf[4096];
-        glGetShaderInfoLog(shader, sizeof(buf), NULL, buf);
-        fprintf(stderr, "error compiling %s shader:\n\n%s\n",
-                type == GL_VERTEX_SHADER ? "vertex" : "fragment",
-                buf);
-        exit(1);
-    }
-
-    return shader;
-  
-}
-
-//////////////////////////////////////////////////////////////////////
-
-GLFWwindow* setup_window() {
-
-    if (!glfwInit()) {
-        fprintf(stderr, "Error initializing GLFW!\n");
-        exit(1);
-    }
-
-    glfwSetErrorCallback(error_callback);
-
-#ifdef __APPLE__    
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
-#endif
-
-    glfwWindowHint(GLFW_DOUBLEBUFFER, GL_TRUE);
-    
-    GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
-                                          "Shadertoy GLFW", NULL, NULL);
-    if (!window) {
-        fprintf(stderr, "Error creating window!\n");
-        exit(1);
-    }
-
-    glfwGetWindowSize(window, window_size+0, window_size+1);
-
-    glfwSetKeyCallback(window, key_callback);
-    glfwSetCursorPosCallback(window, cursor_pos_callback);
-    glfwSetMouseButtonCallback(window, mouse_button_callback);
-    glfwSetWindowSizeCallback(window, window_size_callback);
-    
-    glfwMakeContextCurrent(window);
-    glewInit();
-    glfwSwapInterval(1);
-    
-    check_opengl_errors("after setting up glfw & glew");
-
-
-    return window;
-
-}
-    
-//////////////////////////////////////////////////////////////////////
-
 void setup_shaders() {
 
     GLuint vertex_shader = make_shader(GL_VERTEX_SHADER, 1,
                                        vertex_src);
 
-    char sbuf[MAX_CHANNELS][MAX_CHANNEL_DECL_LENGTH];
+    char sbuf[NUM_CHANNELS][MAX_CHANNEL_DECL_LENGTH];
     
-    for (int i=0; i<MAX_CHANNELS; ++i) {
+    for (int i=0; i<NUM_CHANNELS; ++i) {
 
         if (channels[i].ctype != CTYPE_NONE) {
 
@@ -915,6 +422,56 @@ void setup_array() {
 
 //////////////////////////////////////////////////////////////////////
 
+void update_teximage(channel_t* channel) {
+
+    GLenum target;
+    int count;
+
+    if (channel->ctype == CTYPE_CUBEMAP) {
+        target = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+        count = 6;
+    } else {
+        target = GL_TEXTURE_2D;
+        count = 1;
+    }
+
+    assert( channel->texture.size == channel->size * count );
+
+    for (int i=0; i<count; ++i) {
+    
+        if (!channel->initialized) {
+
+            glTexImage2D(target + i, 0, GL_RGB,
+                         channel->width,
+                         channel->height, 0,
+                         GL_RGB, GL_UNSIGNED_BYTE,
+                         channel->texture.data + i*channel->size);
+
+        } else {
+
+            glTexSubImage2D(target + i, 0,
+                            0, 0,
+                            channel->width, channel->height,
+                            GL_RGB, GL_UNSIGNED_BYTE,
+                            channel->texture.data + i*channel->size);
+
+        }
+
+    }
+
+    if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
+
+        glGenerateMipmap(channel->target);
+                
+    }
+
+    channel->initialized = 1;
+    channel->dirty = 0;
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void setup_textures() {
 
     for (int i=0; i<4; ++i) {
@@ -923,8 +480,7 @@ void setup_textures() {
 
             GLuint channel_loc = glGetUniformLocation(program,
                                                       channels[i].name);
-        
-    
+            
             glActiveTexture(GL_TEXTURE0 + i);
             glUniform1i(channel_loc, i);
 
@@ -964,77 +520,174 @@ void setup_textures() {
 
 //////////////////////////////////////////////////////////////////////
 
-void buf_ensure(buffer_t* buf, size_t len) {
+void reset() {
 
-    size_t new_size = buf->size + len;
-    
-    if (!buf->data) {
-        
-        buf->data = malloc(len);
-        buf->alloc = len;
+    glfwSetTime(0.0);
+    last_frame_start = 0;
+    u_time = starttime;
+    u_time_delta = 0;
+    u_frame = 0;
+    u_mouse[0] = u_mouse[1] = u_mouse[2] = u_mouse[3] = -1;
 
-    } else if (buf->alloc < new_size) {
+    if (keymap) { memset(keymap, 0, KEYMAP_TOTAL_BYTES); }
 
-        while (buf->alloc < new_size) {
-            buf->alloc *= 2;
+    need_render = 1;
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void set_uniforms() {
+
+    for (size_t i=0; i<num_uniforms; ++i) {
+        const uniform_t* u = uinfo + i;
+        switch (u->ptr_type) {
+        case GL_FLOAT:
+            u->float_func(u->handle, 1, (const GLfloat*)u->src);
+            break;
+        case GL_INT:
+            u->int_func(u->handle, 1, (const GLint*)u->src);
+            break;
+        default:
+            fprintf(stderr, "invalid pointer type in set_uniforms!\n");
+            exit(1);
         }
-        buf->data = realloc(buf->data, buf->alloc);
-
+        check_opengl_errors(u->name);
     }
 
-    assert(buf->alloc >= new_size);
-
 }
 
-void buf_free(buffer_t* buf) {
+//////////////////////////////////////////////////////////////////////
 
-    if (buf->data) { free(buf->data); }
-    memset(buf, 0, sizeof(buffer_t));
-
-}
-
-void buf_append(buffer_t* buf, const void* src, size_t len) {
-
-    buf_ensure(buf, len+1);
+void screenshot() {
     
-    memcpy(buf->data + buf->size, src, len);
-    
-    buf->size += len;
-    buf->data[buf->size] = 0;
+    glFinish();
 
-}
+    int w = framebuffer_size[0];
+    int h = framebuffer_size[1];
 
-void buf_read_file(buffer_t* buf, const char* filename) {
+    int stride = w*3;
 
-    FILE* fp = fopen(filename, "r");
-    if (!fp) {
-        fprintf(stderr, "error opening %s\n\n", filename);
-        exit(1);
+    int align;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+
+    printf("alignment is %d\n", align);
+
+    if (stride % align) {
+        stride += align - stride % align;
     }
-    
-    fseek(fp, 0, SEEK_END);
-    long fsize = ftell(fp);
 
-    if (fsize < 0 || fsize > MAX_FILE_LENGTH) {
-        fprintf(stderr, "file exceeds maximum size!\n\n");
+    unsigned char* screen = (unsigned char*)malloc(h*stride);
+  
+    if (!screen) {
+        fprintf(stderr, "out of memory allocating screen!\n");
         exit(1);
     }
   
-    fseek(fp, 0, SEEK_SET);
-    
-    buf_ensure(buf, fsize+1);
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, screen);
+  
+    char buf[BIG_STRING_LENGTH];
+    snprintf(buf, BIG_STRING_LENGTH, "frame%04d.png", png_frame++);
+  
+    write_png(buf, screen, w, h, stride, 1, u_pixel_scale);
+    free(screen);
+  
+    if (single_shot) {
+        single_shot = 0;
+    }
+  
+}
 
-    int nread = fread(buf->data + buf->size, fsize, 1, fp);
 
-    if (nread != 1) {
-        fprintf(stderr, "error reading %s\n\n", filename);
-        exit(1);
+//////////////////////////////////////////////////////////////////////
+
+void render(GLFWwindow* window) {
+
+    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
+
+    for (int i=0; i<2; ++i) {
+        float denom = window_size[i] ? window_size[i] : 1;
+        u_pixel_scale[i] = framebuffer_size[i] / denom;
     }
 
-    buf->size += fsize;
-    buf->data[buf->size] = 0;
+    double frame_start = glfwGetTime();
 
+    if (0) {
+        printf("about to render, time=%f, since last=%f, delta=%f, target=%f\n",
+               u_time, (frame_start - last_frame_start), u_time_delta,
+               target_frame_duration);
+    }
+    
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
+    time_t time = tv.tv_sec;
+    struct tm* ltime = localtime(&time);
+  
+    u_date[0] = ltime->tm_year + 1900.f;
+    u_date[1] = ltime->tm_mon;
+    u_date[2] = ltime->tm_mday;
+    u_date[3] = ( ((ltime->tm_hour * 60.f) + ltime->tm_min) * 60.f +
+                  ltime->tm_sec + tv.tv_usec * 1e-6f );
+
+    u_resolution[0] = framebuffer_size[0] / u_pixel_scale[0];
+    u_resolution[1] = framebuffer_size[1] / u_pixel_scale[1];
+    u_resolution[2] = 1.f;
+
+    check_opengl_errors("before set uniforms");
+    
+    set_uniforms();
+    check_opengl_errors("after set uniforms");
+
+    for (int i=0; i<NUM_CHANNELS; ++i) {
+
+        if (channels[i].ctype == CTYPE_NONE) { continue; }
+
+        if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
+
+            glBindTexture(channels[i].target, channels[i].tex_id);
+
+            update_teximage(&channels[i]);
+
+        }
+        
+    }
+
+    if (keymap) {
+        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
+    }
+    
+    glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
+    
+    check_opengl_errors("after render");
+
+    if (recording || single_shot) {
+        screenshot();
+    }
+    
+    glfwSwapBuffers(window);
+
+    double frame_end = glfwGetTime();
+    u_time_delta = frame_end - frame_start;
+    
+    u_frame += 1;
+
+    if (recording) {
+        u_time += target_frame_duration*speedup;
+    } else if (animating) {
+        u_time += (frame_start - last_frame_start)*speedup;
+    }
+    
+    last_frame_start = frame_start;
+    need_render = 0;
+    
 }
+
+
+
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1043,89 +696,6 @@ void new_shader_source() {
     char lineno[256];
     snprintf(lineno, 256, "\n#line 0 %d\n", shader_count++);
     buf_append(&shader_buf, lineno, strlen(lineno));
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
-
-    buffer_t* buf = (buffer_t*)b;
-
-    buf_append(buf, ptr, size*nmemb);
-    
-    return size * nmemb;
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-json_t* js_object(const json_t* object,
-                  const char* key,
-                  int type) {
-
-    json_t* j = json_object_get(object, key);
-    
-    if (!j) {
-        fprintf(stderr, "error: JSON key not found: %s\n", key);
-        exit(1);
-    }
-
-    if (json_typeof(j) != type) {
-        fprintf(stderr, "error: incorrect type for %s in JSON\n", key);
-        exit(1);
-    }
-
-    return j;
-    
-}
-
-const char* js_object_string(const json_t* object,
-                             const char* key) {
-
-    json_t* j = js_object(object, key, JSON_STRING);
-    return json_string_value(j);
-    
-}
-
-int js_object_integer(const json_t* object,
-                      const char* key) {
-
-    json_t* j = js_object(object, key, JSON_INTEGER);
-    return json_integer_value(j);
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-json_t* js_array(const json_t* array,
-                             int idx,
-                             int type) {
-
-    json_t* j = json_array_get(array, idx);
-    
-    if (!j) {
-        fprintf(stderr, "error: array item %d not found in JSON\n", idx);
-        exit(1);
-    }
-
-    if (json_typeof(j) != type) {
-        fprintf(stderr, "error: incorrect type for array item %d in JSON\n", idx);
-        exit(1);
-    }
-
-    return j;
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
-const char* get_extension(const char* filename) {
-
-    const char* extension = strrchr(filename, '.');
-    if (!extension) { return ""; }
-
-    return extension+1;
 
 }
 
@@ -1160,264 +730,6 @@ void setup_keyboard(int channel) {
 
 //////////////////////////////////////////////////////////////////////
 
-unsigned char* get_rowptr_and_delta(buffer_t* dst,
-                                    int height, int stride,
-                                    int vflip,
-                                    int* row_delta) {
-
-    printf("dst->size = %d\n", (int)dst->size);
-
-    unsigned char* dstart = (unsigned char*)dst->data + dst->size;
-
-    if (vflip) {
-        *row_delta = -stride;
-        return dstart + (height-1)*stride;
-    } else {
-        *row_delta = stride;
-        return dstart;
-    }
-
-
-}
-
-
-//////////////////////////////////////////////////////////////////////
-
-void read_jpg(const buffer_t* raw,
-              channel_t* channel) {
-
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr mgr;
-    jmp_buf setjmp_buffer;
-
-    cinfo.err = jpeg_std_error(&mgr);
-
-    if (setjmp(setjmp_buffer)) {
-        jpeg_destroy_decompress(&cinfo);
-    }
-
-    jpeg_create_decompress(&cinfo);
-
-    jpeg_mem_src(&cinfo, (unsigned char*)raw->data, raw->size);
-
-    int rc = jpeg_read_header(&cinfo, TRUE);
-
-    if (rc != 1) {
-        fprintf(stderr, "failure reading jpeg header!\n");
-        exit(1);
-    }
-
-    jpeg_start_decompress(&cinfo);
-
-    int width = cinfo.output_width;
-    int height = cinfo.output_height;
-    int pixel_size = cinfo.output_components;
-
-    printf("jpeg is %dx%dx%d\n", width, height, pixel_size);
-
-    if (width <= 0 || height <= 0 || pixel_size != 3) {
-        fprintf(stderr, "incorrect JPG type!\n");
-        exit(1);
-    }
-
-    int size = width * height * pixel_size;
-    int row_stride = width * pixel_size;
-
-    if (row_stride % 4) {
-        fprintf(stderr, "warning: bad stride for GL_UNPACK_ALIGNMENT!\n");
-    }
-        
-    buffer_t* decoded = &(channel->texture);
-    
-    buf_ensure(decoded, size);
-
-    int row_delta;
-    unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
-                                                 channel->vflip, &row_delta);
-
-    decoded->size += size;
-
-    while (cinfo.output_scanline < cinfo.output_height) {
-        
-        jpeg_read_scanlines(&cinfo, &rowptr, 1);
-        rowptr += row_delta;
-        
-    }
-
-    jpeg_finish_decompress(&cinfo);
-    jpeg_destroy_decompress(&cinfo);
-
-    channel->width = width;
-    channel->height = height;
-    channel->size = size;
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-typedef struct png_simple_stream {
-
-    const unsigned char* start;
-    size_t pos;
-    size_t len;
-    
-} png_simple_stream_t;
-
-void png_stream_read(png_structp png_ptr,
-                     png_bytep data,
-                     png_size_t length) {
-
-
-    png_simple_stream_t* str = (png_simple_stream_t*)png_get_io_ptr(png_ptr);
-
-    assert( str->pos + length <= str->len );
-
-    memcpy(data, str->start + str->pos, length );
-    str->pos += length;
-
-}
-
-void read_png(const buffer_t* raw,
-              channel_t* channel) {
-
-    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING,
-                                                 NULL, NULL, NULL);
-
-    if (!png_ptr) {
-        fprintf(stderr, "error initializing png read struct!\n");
-        exit(1);
-    }
-
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-
-    if (!info_ptr) {
-        fprintf(stderr, "error initializing png info struct!\n");
-        exit(1);
-    }
-
-    if (setjmp(png_jmpbuf(png_ptr))) {
-        fprintf(stderr, "PNG read error!\n");
-        exit(1);
-    }
-
-    png_simple_stream_t str = { (const unsigned char*)raw->data, 0, raw->size };
-
-    png_set_read_fn(png_ptr, &str, png_stream_read);
-
-    png_set_sig_bytes(png_ptr, 0);
-    png_read_info(png_ptr, info_ptr);
-
-    int width = png_get_image_width(png_ptr, info_ptr);
-    int height = png_get_image_height(png_ptr, info_ptr);
-    int bitdepth = png_get_bit_depth(png_ptr, info_ptr);
-    int channels = png_get_channels(png_ptr, info_ptr);
-
-    if (width <= 0 || height <= 0 || bitdepth != 8 || channels != 3) {
-        fprintf(stderr, "invalid PNG settings!\n");
-        exit(1);
-    }
-
-    printf("PNG is %dx%dx%d\n", width, height, channels);
-
-    int row_stride = width * channels;
-    
-    if (row_stride % 4) {
-        fprintf(stderr, "warning: PNG data is not aligned for OpenGL!\n");
-        exit(1);
-    }
-
-    int size = row_stride * height;
-
-    channel->width = width;
-    channel->height = height;
-    channel->size = size;
-
-    buffer_t* decoded = &(channel->texture);
-
-    buf_ensure(decoded, size);
-
-    int row_delta;
-    unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
-                                                 channel->vflip, &row_delta);
-
-    decoded->size += size;
-
-    png_bytepp row_ptrs = malloc(height * sizeof(png_bytep));
-    
-    for (size_t i=0; i<height; ++i) {
-        row_ptrs[i] = rowptr;
-        rowptr += row_delta;
-    }
-
-    png_read_image(png_ptr, row_ptrs);
-
-    png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
-
-    free(row_ptrs);
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void fetch_url(const char* url, buffer_t* buf) {
-
-    CURL* curl = curl_easy_init();
-
-    if (!curl) {
-        fprintf(stderr, "error initting curl!\n");
-        exit(1);
-    }
-
-    buf->data = malloc(MAX_PROGRAM_LENGTH);
-    buf->alloc = MAX_PROGRAM_LENGTH;
-    buf->size = 0;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
-    
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_response);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
-
-    printf("fetching %s...\n", url);
-    
-    int status = curl_easy_perform(curl);
-
-    if (status != 0) {
-        fprintf(stderr, "curl error %s\n", curl_easy_strerror(status));
-        exit(1);
-    }
-
-    long code;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-
-    if (code != 200) {
-        fprintf(stderr, "server responded with code %ld\n", code);
-        exit(1);
-    }
-
-    printf("  ...retrieved data of length %d\n", (int)buf->size);
-
-} 
-
-//////////////////////////////////////////////////////////////////////
-
-int lookup_enum(const enum_info_t* enums, const char* value) {
-    
-    for (int i=0; enums[i].string; ++i) {
-
-        if (!strcmp(enums[i].string, value)) {
-            return enums[i].value;
-        }
-        
-    }
-
-    fprintf(stderr, "error: no matching value for %s\n", value);
-    exit(1);
-    
-}
-
-//////////////////////////////////////////////////////////////////////
-
 void load_image(channel_t* channel, const char* src) {
 
     buffer_t raw = { 0, 0, 0 };
@@ -1425,7 +737,7 @@ void load_image(channel_t* channel, const char* src) {
     if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
 
         const char* filename = src+7;
-        buf_read_file(&raw, filename);            
+        buf_read_file(&raw, filename, MAX_FILE_LENGTH);            
 
     } else {
             
@@ -1441,11 +753,15 @@ void load_image(channel_t* channel, const char* src) {
     if (!strcasecmp(extension, "jpg") ||
         !strcasecmp(extension, "jpeg")) {
 
-        read_jpg(&raw, channel);
+        read_jpg(&raw, channel->vflip,
+                 &channel->width, &channel->height, &channel->size,
+                 &channel->texture);
                 
     } else if (!strcasecmp(extension, "png")) {
 
-        read_png(&raw, channel);
+        read_png(&raw, channel->vflip,
+                 &channel->width, &channel->height, &channel->size,
+                 &channel->texture);
 
     } else {
 
@@ -1462,22 +778,10 @@ void load_image(channel_t* channel, const char* src) {
 
 void load_json() {
 
-    json_error_t error;
+    json_root = jsparse(&json_buf);
 
-    json_root = json_loadb(json_buf.data, json_buf.size, 0, &error);
-
-    if (!json_root) {
-        fprintf(stderr, "error: on line %d: %s\n", error.line, error.text);
-        exit(1);
-    }
-
-    if (!json_is_object(json_root)) {
-        fprintf(stderr, "expected JSON root to be object!\n");
-        exit(1);
-    }
-
-    json_t* shader = js_object(json_root, "Shader", JSON_OBJECT);
-    json_t* renderpass = js_object(shader, "renderpass", JSON_ARRAY);
+    json_t* shader = jsobject(json_root, "Shader", JSON_OBJECT);
+    json_t* renderpass = jsobject(shader, "renderpass", JSON_ARRAY);
 
     size_t len = json_array_size(renderpass);
     if (len != 1) {
@@ -1485,25 +789,25 @@ void load_json() {
         exit(1);
     }
 
-    json_t* image = js_array(renderpass, len-1, JSON_OBJECT);
+    json_t* image = jsarray(renderpass, len-1, JSON_OBJECT);
 
-    json_t* inputs = js_object(image, "inputs", JSON_ARRAY);
+    json_t* inputs = jsobject(image, "inputs", JSON_ARRAY);
     int ninputs = json_array_size(inputs);
 
     for (int i=0; i<ninputs; ++i) {
         
-        json_t* input_i = js_array(inputs, i, JSON_OBJECT);
+        json_t* input_i = jsarray(inputs, i, JSON_OBJECT);
         
-        int cidx = js_object_integer(input_i, "channel");
+        int cidx = jsobject_integer(input_i, "channel");
         
-        if (cidx < 0 || cidx >= MAX_CHANNELS) {
+        if (cidx < 0 || cidx >= NUM_CHANNELS) {
             fprintf(stderr, "invalid channel for input %d\n", i);
             exit(1);
         }
 
         channel_t* channel = channels + cidx;
 
-        json_t* sampler = js_object(input_i, "sampler", JSON_OBJECT);
+        json_t* sampler = jsobject(input_i, "sampler", JSON_OBJECT);
 
         const enum_info_t filter_enums[] = {
             { "nearest", GL_NEAREST },
@@ -1525,21 +829,20 @@ void load_json() {
         };
         
         channel->filter = lookup_enum(filter_enums, 
-                                    js_object_string(sampler, "filter"));
+                                    jsobject_string(sampler, "filter"));
 
         channel->srgb = lookup_enum(tf_enums,
-                                  js_object_string(sampler, "srgb"));
+                                  jsobject_string(sampler, "srgb"));
 
         channel->vflip = lookup_enum(tf_enums,
-                                   js_object_string(sampler, "vflip"));
+                                   jsobject_string(sampler, "vflip"));
 
         channel->wrap = lookup_enum(wrap_enums,
-                                  js_object_string(sampler, "wrap"));
-        
-        
-        const char* ctype = js_object_string(input_i, "ctype");
+                                  jsobject_string(sampler, "wrap"));
 
-        const char* src = js_object_string(input_i, "src");
+        const char* ctype = jsobject_string(input_i, "ctype");
+
+        const char* src = jsobject_string(input_i, "src");
         
         if (!strcmp(ctype, "keyboard")) {
             
@@ -1593,47 +896,21 @@ void load_json() {
             }
             
         } else {
+            
             fprintf(stderr, "unsupported input type: %s\n", ctype);
             exit(1);
+            
         }
         
     }
     
-    const char* code_string = js_object_string(image, "code");
+    const char* code_string = jsobject_string(image, "code");
 
     new_shader_source();
     buf_append(&shader_buf, code_string, strlen(code_string));
-
     fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
     
 }
-
-
-//////////////////////////////////////////////////////////////////////
-
-void load_json_file(const char* filename) {
-
-    buf_read_file(&json_buf, filename);
-    load_json();
-
-}
-
-
-//////////////////////////////////////////////////////////////////////
-
-void load_shadertoy(const char* id) {
-
-    char url[1024];
-    
-    snprintf(url, 1024,
-             "http://www.shadertoy.com/api/v1/shaders/%s?key=%s", id, api_key);
-
-    fetch_url(url, &json_buf);
-
-    load_json();
-    
-}
-
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1657,32 +934,6 @@ void dieusage() {
   
     exit(1);
   
-}
-
-//////////////////////////////////////////////////////////////////////
-
-
-void load_shader(const char* filename) {
-
-
-    new_shader_source();
-    buf_read_file(&shader_buf, filename);
-
-    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
-
-  
-}
-
-//////////////////////////////////////////////////////////////////////
-
-
-int is_json(const char* filename) {
-
-    const char* extension = get_extension(filename);
-
-    return ( !strcasecmp(extension, "js") ||
-             !strcasecmp(extension, "json") );
-
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1865,23 +1116,39 @@ void get_options(int argc, char** argv) {
             exit(1);
         }
         
-        load_shadertoy(shadertoy_id);
+        char url[1024];
+        
+        snprintf(url, 1024,
+                 "http://www.shadertoy.com/api/v1/shaders/%s?key=%s",
+                 shadertoy_id, api_key);
+
+        fetch_url(url, &json_buf);
+
+        load_json();
         
     } else {
         
         for (int i=input_start; i<argc; ++i) {
+
+            const char* filename = argv[i];
+            const char* extension = get_extension(filename);
             
-            if (is_json(argv[i])) {
+            if (!strcasecmp(extension, "js") || !strcasecmp(extension, "json")) {
                 
                 if (input_start != argc - 1) {
-                    fprintf(stderr, "error: can't specify more than one JSON input!\n");
+                    fprintf(stderr, "error: can't specify more than "
+                            "one JSON input!\n");
+                    exit(1);
                 }
                 
-                load_json_file(argv[i]);
+                buf_read_file(&json_buf, filename, MAX_FILE_LENGTH);
+                load_json();
                 
             } else {
                 
-                load_shader(argv[i]);
+                new_shader_source();
+                buf_read_file(&shader_buf, filename, MAX_FILE_LENGTH);
+                fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
                 
             }
         }
@@ -1892,11 +1159,182 @@ void get_options(int argc, char** argv) {
 
 //////////////////////////////////////////////////////////////////////
 
+void error_callback(int error, const char* description) {
+    fprintf(stderr, "GLFW error: %s\n", description);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void mouse_button_callback(GLFWwindow* window,
+                           int button, int action, int mods) {
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+
+        if (action == GLFW_PRESS) {
+            
+            u_mouse[0] = cur_mouse[0];
+            u_mouse[1] = cur_mouse[1];
+            
+            u_mouse[2] = cur_mouse[0];
+            u_mouse[3] = cur_mouse[1];
+            
+            mouse_down = 1;
+            
+        } else {
+            
+            u_mouse[2] = -u_mouse[2];
+            u_mouse[3] = -u_mouse[3];
+            
+            mouse_down = 0;
+            
+        }
+        
+        need_render = 1;
+        
+    }
+
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void cursor_pos_callback(GLFWwindow* window,
+                         double x, double y) {
+
+
+    cur_mouse[0] = x;
+    cur_mouse[1] = window_size[1] - y;
+
+    if (mouse_down) {
+        u_mouse[0] = cur_mouse[0];
+        u_mouse[1] = cur_mouse[1];
+        need_render = 1;
+    }
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void key_callback(GLFWwindow* window, int key,
+                  int scancode, int action, int mods) {
+
+    key = toupper(key);
+
+    if (action == GLFW_PRESS) {
+        
+        if (key == GLFW_KEY_ESCAPE) {
+            
+            glfwSetWindowShouldClose(window, GL_TRUE);
+            
+        } else if (key == GLFW_KEY_BACKSPACE ||
+                   key == GLFW_KEY_DELETE) {
+
+            reset();
+            
+        } else if (key == '`' || key == '~') {
+
+            animating = !animating;
+            
+            if (animating == 1) {
+                printf("resumed at %f\n", u_time);
+                last_frame_start = 0;
+                glfwSetTime(0);
+            } else {
+                printf("paused at %f\n", u_time);
+            }
+                
+            
+        } else if (key == 'S' && (mods & GLFW_MOD_ALT)) {
+
+            printf("saving a screenshot!\n");
+            single_shot = 1;
+
+        } else if (key < 256 && keymap) {
+
+            for (int c=0; c<3; ++c) {
+                key_press[3*key+c] = 255;
+                key_toggle[3*key+c] = ~key_toggle[3*key+c];
+                key_state[3*key+c] = 255;
+            }
+
+        }
+        
+    } else if (keymap) { // release
+
+        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
+        if (key_state[3*key]) {
+            for (int c=0; c<3; ++c) {
+                key_state[3*key+c] = 0;
+            }
+        }
+
+    }
+
+    need_render = 1;
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void window_size_callback(GLFWwindow* window,
+                          int w, int h) {
+
+    window_size[0] = w;
+    window_size[1] = h;
+
+    render(window);
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
+GLFWwindow* setup_window() {
+
+    if (!glfwInit()) {
+        fprintf(stderr, "Error initializing GLFW!\n");
+        exit(1);
+    }
+
+    glfwSetErrorCallback(error_callback);
+
+#ifdef __APPLE__    
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
+#endif
+
+    glfwWindowHint(GLFW_DOUBLEBUFFER, GL_TRUE);
+    
+    GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
+                                          "Shadertoy GLFW", NULL, NULL);
+    if (!window) {
+        fprintf(stderr, "Error creating window!\n");
+        exit(1);
+    }
+
+    glfwGetWindowSize(window, window_size+0, window_size+1);
+
+    glfwSetKeyCallback(window, key_callback);
+    glfwSetCursorPosCallback(window, cursor_pos_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetWindowSizeCallback(window, window_size_callback);
+    
+    glfwMakeContextCurrent(window);
+    glewInit();
+    glfwSwapInterval(1);
+    
+    check_opengl_errors("after setting up glfw & glew");
+
+    return window;
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main(int argc, char** argv) {
     
     memset(channels, 0, sizeof(channels));
-
-    curl_global_init(CURL_GLOBAL_ALL);
 
     get_options(argc, argv);
 
@@ -1930,9 +1368,15 @@ int main(int argc, char** argv) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
-    if (shader_buf.data) { free(shader_buf.data); }
+
+    buf_free(&json_buf);
+    buf_free(&shader_buf);
+
+    for (int i=0; i<NUM_CHANNELS; ++i) {
+        buf_free(&channels[i].texture);
+    }
+    
     if (json_root) { json_decref(json_root); }
-    if (json_buf.data) { free(json_buf.data); }
     
     return 0;
     
