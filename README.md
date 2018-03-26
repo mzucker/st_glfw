@@ -8,6 +8,9 @@ Required packages:
   - glfw3 
   - glew
   - libpng
+  - libjpeg
+  - libcurl
+  - jansson
   - cmake
   
  To compile
