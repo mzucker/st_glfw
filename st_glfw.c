@@ -81,14 +81,16 @@ typedef enum texture_ctype {
     CTYPE_NONE = 0,
     CTYPE_TEXTURE = 1,
     CTYPE_KEYBOARD = 2,
+    CTYPE_CUBEMAP = 3,
 } texture_ctype_t;
 
 typedef struct channel {
 
     texture_ctype_t ctype;
     char name[MAX_CHANNEL_NAME_LENGTH];
-    int width, height;
+    int width, height, size;
 
+    GLuint target;
     GLuint tex_id;
     
     int filter;
@@ -454,35 +456,51 @@ void reset() {
 
 //////////////////////////////////////////////////////////////////////
 
-void update_teximage(channel_t* c) {
+void update_teximage(channel_t* channel) {
 
-    if (!c->initialized) {
-        
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                     c->width,
-                     c->height, 0,
-                     GL_RGB, GL_UNSIGNED_BYTE,
-                     c->texture.data);
+    GLenum target;
+    int count;
 
-        c->initialized = 1;
-
+    if (channel->ctype == CTYPE_CUBEMAP) {
+        target = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+        count = 6;
     } else {
+        target = GL_TEXTURE_2D;
+        count = 1;
+    }
 
-        glTexSubImage2D(GL_TEXTURE_2D, 0,
-                        0, 0,
-                        c->width, c->height,
-                        GL_RGB, GL_UNSIGNED_BYTE,
-                        c->texture.data);
+    assert( channel->texture.size == channel->size * count );
+
+    for (int i=0; i<count; ++i) {
+    
+        if (!channel->initialized) {
+
+            glTexImage2D(target + i, 0, GL_RGB,
+                         channel->width,
+                         channel->height, 0,
+                         GL_RGB, GL_UNSIGNED_BYTE,
+                         channel->texture.data + i*channel->size);
+
+        } else {
+
+            glTexSubImage2D(target + i, 0,
+                            0, 0,
+                            channel->width, channel->height,
+                            GL_RGB, GL_UNSIGNED_BYTE,
+                            channel->texture.data + i*channel->size);
+
+        }
 
     }
 
-    if (c->filter == GL_LINEAR_MIPMAP_LINEAR) {
+    if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
 
-        glGenerateMipmap(GL_TEXTURE_2D);
+        glGenerateMipmap(channel->target);
                 
     }
 
-    c->dirty = 0;
+    channel->initialized = 1;
+    channel->dirty = 0;
     
 }
 
@@ -532,7 +550,7 @@ void render(GLFWwindow* window) {
 
         if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
 
-            glBindTexture(GL_TEXTURE_2D, channels[i].tex_id);
+            glBindTexture(channels[i].target, channels[i].tex_id);
 
             update_teximage(&channels[i]);
 
@@ -798,6 +816,9 @@ void setup_shaders() {
             case CTYPE_TEXTURE:
             case CTYPE_KEYBOARD:
                 stype = "sampler2D";
+                break;
+            case CTYPE_CUBEMAP:
+                stype = "samplerCube";
                 break;
             default:
                 fprintf(stderr, "invalid channel type!\n");
@@ -1114,9 +1135,11 @@ void setup_keyboard(int channel) {
 
     channel_t* c = channels + channel;
 
+    c->target = GL_TEXTURE_2D;
     c->ctype = CTYPE_KEYBOARD;
     c->width = KEYMAP_BYTES_PER_ROW / 3;
     c->height = KEYMAP_ROWS;
+    c->size = KEYMAP_TOTAL_BYTES;
 
     c->filter = GL_NEAREST;
     c->wrap = GL_CLAMP_TO_EDGE;
@@ -1141,6 +1164,8 @@ unsigned char* get_rowptr_and_delta(buffer_t* dst,
                                     int height, int stride,
                                     int vflip,
                                     int* row_delta) {
+
+    printf("dst->size = %d\n", (int)dst->size);
 
     unsigned char* dstart = (unsigned char*)dst->data + dst->size;
 
@@ -1210,6 +1235,7 @@ void read_jpg(const buffer_t* raw,
     unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
                                                  channel->vflip, &row_delta);
 
+    decoded->size += size;
 
     while (cinfo.output_scanline < cinfo.output_height) {
         
@@ -1223,6 +1249,7 @@ void read_jpg(const buffer_t* raw,
 
     channel->width = width;
     channel->height = height;
+    channel->size = size;
 
 }
 
@@ -1303,17 +1330,20 @@ void read_png(const buffer_t* raw,
 
     channel->width = width;
     channel->height = height;
+    channel->size = size;
 
     buffer_t* decoded = &(channel->texture);
 
     buf_ensure(decoded, size);
 
-    png_bytepp row_ptrs = malloc(height * sizeof(png_bytep));
-
     int row_delta;
     unsigned char* rowptr = get_rowptr_and_delta(decoded, height, row_stride,
                                                  channel->vflip, &row_delta);
 
+    decoded->size += size;
+
+    png_bytepp row_ptrs = malloc(height * sizeof(png_bytep));
+    
     for (size_t i=0; i<height; ++i) {
         row_ptrs[i] = rowptr;
         rowptr += row_delta;
@@ -1324,7 +1354,7 @@ void read_png(const buffer_t* raw,
     png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
 
     free(row_ptrs);
-    
+
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1384,6 +1414,48 @@ int lookup_enum(const enum_info_t* enums, const char* value) {
     fprintf(stderr, "error: no matching value for %s\n", value);
     exit(1);
     
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void load_image(channel_t* channel, const char* src) {
+
+    buffer_t raw = { 0, 0, 0 };
+            
+    if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
+
+        const char* filename = src+7;
+        buf_read_file(&raw, filename);            
+
+    } else {
+            
+        char url[1024];
+        snprintf(url, 1024, "http://www.shadertoy.com%s", src);
+
+        fetch_url(url, &raw);
+
+    }
+
+    const char* extension = get_extension(src);
+
+    if (!strcasecmp(extension, "jpg") ||
+        !strcasecmp(extension, "jpeg")) {
+
+        read_jpg(&raw, channel);
+                
+    } else if (!strcasecmp(extension, "png")) {
+
+        read_png(&raw, channel);
+
+    } else {
+
+        fprintf(stderr, "unrecognized media extension\n");
+        exit(1);
+                    
+    }
+
+    buf_free(&raw);
+
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1467,51 +1539,58 @@ void load_json() {
         
         const char* ctype = js_object_string(input_i, "ctype");
 
+        const char* src = js_object_string(input_i, "src");
+        
         if (!strcmp(ctype, "keyboard")) {
             
             setup_keyboard(cidx);
             
         } else if (!strcmp(ctype, "texture")) {
-
+            
+            channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_TEXTURE;
+            load_image(channel, src);
 
-            const char* src = js_object_string(input_i, "src");
-
-            buffer_t raw = { 0, 0, 0 };
+        } else if (!strcmp(ctype, "cubemap")) {
             
-            if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
+            channel->target = GL_TEXTURE_CUBE_MAP;
+            channel->ctype = CTYPE_CUBEMAP;
 
-                const char* filename = src+7;
-                buf_read_file(&raw, filename);            
+            const char* dot = strrchr(src, '.');
+            if (!dot) { dot = src + strlen(src); }
 
-            } else {
-            
-                char url[1024];
-                snprintf(url, 1024, "http://www.shadertoy.com%s", src);
+            int base_len = dot - src;
+            int ext_len = strlen(dot);
 
-                fetch_url(url, &raw);
-
-            }
-
-            const char* extension = get_extension(src);
-
-            if (!strcasecmp(extension, "jpg") ||
-                !strcasecmp(extension, "jpeg")) {
-
-                read_jpg(&raw, channel);
-                
-            } else if (!strcasecmp(extension, "png")) {
-
-                read_png(&raw, channel);
-
-            } else {
-
-                fprintf(stderr, "unrecognized media extension\n");
+            if (base_len + ext_len + 2 > 1023) {
+                fprintf(stderr, "error: filename too long!\n");
                 exit(1);
-                    
             }
+            
+            char base[1024];
+            memcpy(base, src, base_len);
+            base[base_len] = 0;
 
-            buf_free(&raw);
+            for (int i=0; i<6; ++i) {
+
+                const char* src_i;
+
+                if (i == 0) {
+                    src_i = src;
+                } else {
+                    int ii = i;
+                    if (channel->vflip) {
+                        if (ii == 2) { ii = 3; }
+                        else if (ii == 3) { ii = 2; }
+                    }
+                    snprintf(base + base_len, 1024-base_len, "_%d%s", ii, dot);
+                    src_i = base;
+                }
+
+                printf("loading %s\n", src_i);
+                load_image(channel, src_i);
+                
+            }
             
         } else {
             fprintf(stderr, "unsupported input type: %s\n", ctype);
@@ -1520,7 +1599,7 @@ void load_json() {
         
     }
     
-    const char* code_string = json_string_value(js_object(image, "code", JSON_STRING));
+    const char* code_string = js_object_string(image, "code");
 
     new_shader_source();
     buf_append(&shader_buf, code_string, strlen(code_string));
