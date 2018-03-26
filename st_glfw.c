@@ -99,6 +99,7 @@ typedef struct channel {
     buffer_t texture;
 
     int dirty;
+    int initialized;
     
 } channel_t;
 
@@ -402,7 +403,18 @@ void screenshot() {
     int w = framebuffer_size[0];
     int h = framebuffer_size[1];
 
-    unsigned char* screen = (unsigned char*)malloc(w*h*3);
+    int stride = w*3;
+
+    int align;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+
+    printf("alignment is %d\n", align);
+
+    if (stride % align) {
+        stride += align - stride % align;
+    }
+
+    unsigned char* screen = (unsigned char*)malloc(h*stride);
   
     if (!screen) {
         fprintf(stderr, "out of memory allocating screen!\n");
@@ -414,7 +426,7 @@ void screenshot() {
     char buf[BIG_STRING_LENGTH];
     snprintf(buf, BIG_STRING_LENGTH, "frame%04d.png", png_frame++);
   
-    quick_png(buf, screen, w, h, w*3, 1);
+    quick_png(buf, screen, w, h, stride, 1);
     free(screen);
   
     if (single_shot) {
@@ -444,11 +456,25 @@ void reset() {
 
 void update_teximage(channel_t* c) {
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
-                 c->width,
-                 c->height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE,
-                 c->texture.data);
+    if (!c->initialized) {
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                     c->width,
+                     c->height, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE,
+                     c->texture.data);
+
+        c->initialized = 1;
+
+    } else {
+
+        glTexSubImage2D(GL_TEXTURE_2D, 0,
+                        0, 0,
+                        c->width, c->height,
+                        GL_RGB, GL_UNSIGNED_BYTE,
+                        c->texture.data);
+
+    }
 
     if (c->filter == GL_LINEAR_MIPMAP_LINEAR) {
 
@@ -457,7 +483,7 @@ void update_teximage(channel_t* c) {
     }
 
     c->dirty = 0;
-
+    
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -501,6 +527,8 @@ void render(GLFWwindow* window) {
     check_opengl_errors("after set uniforms");
 
     for (int i=0; i<MAX_CHANNELS; ++i) {
+
+        if (channels[i].ctype == CTYPE_NONE) { continue; }
 
         if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
 
@@ -738,8 +766,9 @@ GLFWwindow* setup_window() {
     glfwMakeContextCurrent(window);
     glewInit();
     glfwSwapInterval(1);
-
+    
     check_opengl_errors("after setting up glfw & glew");
+
 
     return window;
 
@@ -875,7 +904,7 @@ void setup_textures() {
 
             glGenTextures(1, &channels[i].tex_id);
             glBindTexture(GL_TEXTURE_2D, channels[i].tex_id);
-
+            
             int mag = channels[i].filter;
             if (mag == GL_LINEAR_MIPMAP_LINEAR) {
                 mag = GL_LINEAR;
@@ -897,8 +926,7 @@ void setup_textures() {
                             GL_TEXTURE_WRAP_T,
                             channels[i].wrap);
 
-            glBindTexture(GL_TEXTURE_2D, 0);
-            
+            update_teximage(&channels[i]);
 
             check_opengl_errors("after dealing with channel");
 
@@ -1088,8 +1116,6 @@ void setup_keyboard(int channel) {
     c->filter = GL_NEAREST;
     c->wrap = GL_CLAMP_TO_EDGE;
 
-    c->dirty = 1;
-
     buf_ensure(&(c->texture), KEYMAP_TOTAL_BYTES);
 
     keymap = (unsigned char*)c->texture.data;
@@ -1147,6 +1173,11 @@ void read_jpg(const buffer_t* raw,
     int size = width * height * pixel_size;
     int row_stride = width * pixel_size;
 
+    if (row_stride % 4) {
+        fprintf(stderr, "warning: bad stride for GL_UNPACK_ALIGNMENT!\n");
+    }
+        
+
     buffer_t* decoded = &(channel->texture);
     
     buf_ensure(decoded, size);
@@ -1175,7 +1206,6 @@ void read_jpg(const buffer_t* raw,
     channel->ctype = CTYPE_TEXTURE;
     channel->width = width;
     channel->height = height;
-    channel->dirty = 1;
 
 }
 
