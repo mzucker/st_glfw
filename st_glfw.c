@@ -9,6 +9,9 @@
 #include <ctype.h>
 #include <assert.h>
 
+#include <jansson.h>
+#include <curl/curl.h>
+
 //////////////////////////////////////////////////////////////////////
 
 enum {
@@ -20,7 +23,7 @@ enum {
     MAX_SAMPLER_DECL_LENGTH = 64,
     
     BIG_STRING_LENGTH = 1024,
-    MAX_PROGRAM_LENGTH = 1024*64,
+    MAX_PROGRAM_LENGTH = 1024*256,
     
     KEYMAP_ROWS = 3,
     KEYMAP_BYTES_PER_ROW = 256*3
@@ -128,10 +131,24 @@ enum {
     FRAG_SRC_NUM_SLOTS = 7
 };
 
-char*  shader = NULL;
-size_t shader_alloc = 0;
-size_t shader_size = 0;
+const char* shadertoy_id = NULL;
+const char* api_key = NULL;
+
+const char* json_input = NULL;
+json_t* json_root = NULL;
+
+typedef struct buffer {
+    
+    char*  data;
+    size_t alloc;
+    size_t size;
+    
+} buffer_t;
+
+buffer_t shader_buf = { 0, 0, 0 };
 int shader_count = 0;
+
+buffer_t json_buf = { 0, 0, 0 };
 
 const char* fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
@@ -627,189 +644,6 @@ GLuint make_shader(GLenum type,
 
 //////////////////////////////////////////////////////////////////////
 
-void dieusage() {
-    
-    fprintf(stderr,
-            "usage: st_glfw [OPTIONS] SHADER.glsl\n"
-            "\n"
-            "OPTIONS:\n"
-            "  -geometry  WxH       Initialize window with width W and height H\n"
-            "  -speedup   FACTOR    Speed up by this factor\n"
-            "  -frames    COUNT     Record COUNT frames to PNG\n"
-            "  -duration  TIME      Record TIME seconds to PNG\n"
-            "  -fps       FPS       Target FPS for recording\n"
-            "  -starttime TIME      Starting value of iTime uniform in seconds\n"
-            "  -paused              Start out paused\n"
-            "\n"
-            );
-  
-    exit(1);
-  
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void load_shader(const char* filename) {
-
-    FILE* fp = fopen(filename, "r");
-    if (!fp) {
-        fprintf(stderr, "error opening %s\n\n", filename);
-        dieusage();
-    }
-    
-    fseek(fp, 0, SEEK_END);
-    long fsize = ftell(fp);
-
-    if (fsize < 0 || fsize > MAX_PROGRAM_LENGTH) {
-        fprintf(stderr, "file exceeds maximum size!\n\n");
-        exit(1);
-    }
-  
-    fseek(fp, 0, SEEK_SET);
-
-    char lineno[256];
-    snprintf(lineno, 256, "\n#line 0 %d\n", shader_count++);
-    size_t lineno_size = strlen(lineno);
-
-    size_t new_size = shader_size + (size_t)fsize + lineno_size;
-
-    if (!shader) {
-        
-        shader = (char*)malloc(new_size);
-        shader_alloc = new_size;
-        
-    } else if (shader_alloc < new_size) {
-        
-        while (shader_alloc < new_size) {
-            shader_alloc *= 2;
-        }
-        
-        shader = (char*)realloc(shader, shader_alloc);
-
-    }
-
-    memcpy(shader + shader_size, lineno, lineno_size);
-
-    assert(shader_alloc >= new_size);
-    int nread = fread(shader + shader_size + lineno_size, fsize, 1, fp);
-
-    if (nread != 1) {
-        fprintf(stderr, "error reading %s\n\n", filename);
-    }
-  
-    fclose(fp);
-
-    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader;
-    shader_size  = new_size;
-
-  
-}
-
-//////////////////////////////////////////////////////////////////////
-
-double getdouble(int argc, char** argv, int i) {
-    if (i >= argc) {
-        fprintf(stderr, "error: expected number for %s\n", argv[i-1]);
-        dieusage();
-    }
-    char* endptr;
-    double x = strtod(argv[i], &endptr);
-    if (!endptr || *endptr || x <= 0.0) {
-        fprintf(stderr, "error: expected positive number for %s\n", argv[i-1]);
-        dieusage();
-    }
-    return x;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-long getint(int argc, char** argv, int i) {
-    if (i >= argc) {
-        fprintf(stderr, "error: expected number for %s\n", argv[i-1]);
-        dieusage();
-    }
-    char* endptr;
-    long x = strtol(argv[i], &endptr, 10);
-    if (!endptr || *endptr || x < 0) {
-        fprintf(stderr, "error: expected non-negative number for %s\n", argv[i-1]);
-        dieusage();
-    }
-    return x;
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void get_options(int argc, char** argv) {
-
-    double rduration = 0.0;
-    
-    for (int i=1; i<argc; ++i) {
-    
-        if (!strcmp(argv[i], "-record")) {
-            recording = 1;
-        } else if (!strcmp(argv[i], "-geometry")) {
-            if (i+1 >= argc) {
-                fprintf(stderr, "error: expected WxH for -geometry\n");
-                dieusage();
-            }
-            int chars;
-            if (sscanf(argv[i+1], "%dx%d%n", window_size+0, window_size+1, &chars) != 2 ||
-                argv[i+1][chars] != '\0') {
-                fprintf(stderr, "error: bad format for -geometry\n");
-                dieusage();
-            }
-            i += 1;
-        } else if (!strcmp(argv[i], "-speedup")) {
-            speedup = getdouble(argc, argv, i+1);
-            i += 1;
-        } else if (!strcmp(argv[i], "-paused")) {
-            animating = 0;
-        } else if (!strcmp(argv[i], "-starttime")) {
-            starttime = getdouble(argc, argv, i+1);
-            i += 1;
-        } else if (!strcmp(argv[i], "-duration")) {
-            recording = 1;
-            rduration = getdouble(argc, argv, i+1);
-            i += 1;
-        } else if (!strcmp(argv[i], "-frames")) {
-            recording = 1;
-            record_frames = getint(argc, argv, i+1);
-            i += 1;
-        } else if (!strcmp(argv[i], "-keyboard")) {
-            
-            key_channel = getint(argc, argv, i+1);
-            
-            if (key_channel < 0 || key_channel >= 4) {
-                fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
-                exit(1);
-            }
-
-            samplers[key_channel].type = GL_SAMPLER_2D;
-
-            i += 1;
-            
-        } else if (!strcmp(argv[i], "-fps")) {
-            target_frame_duration = 1.0 / getdouble(argc, argv, i+1);
-            i += 1;
-        } else {
-            load_shader(argv[i]);
-        }
-
-
-    }
-
-    if (recording && rduration) {
-        record_frames = floor(rduration / (target_frame_duration * speedup));
-    }
-
-    if (recording) {
-        printf("will record for %d frames\n", record_frames);
-    }
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
 GLFWwindow* setup_window() {
 
     if (!glfwInit()) {
@@ -993,11 +827,514 @@ void setup_textures() {
 
 //////////////////////////////////////////////////////////////////////
 
+void buf_ensure(buffer_t* buf, size_t len) {
+
+    size_t new_size = buf->size + len;
+    
+    if (!buf->data) {
+        
+        buf->data = malloc(len);
+        buf->alloc = len;
+
+    } else if (buf->alloc < new_size) {
+
+        while (buf->alloc < new_size) {
+            buf->alloc *= 2;
+        }
+        buf->data = realloc(buf->data, buf->alloc);
+
+    }
+
+    assert(buf->alloc >= new_size);
+
+}
+    
+
+void buf_append(buffer_t* buf, const void* src, size_t len) {
+
+    buf_ensure(buf, len);
+    
+    memcpy(buf->data + buf->size, src, len);
+    
+    buf->size += len;
+
+}
+
+void buf_read_file(buffer_t* buf, const char* filename) {
+
+    FILE* fp = fopen(filename, "r");
+    if (!fp) {
+        fprintf(stderr, "error opening %s\n\n", filename);
+    }
+    
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+
+    if (fsize < 0 || fsize > MAX_PROGRAM_LENGTH) {
+        fprintf(stderr, "file exceeds maximum size!\n\n");
+        exit(1);
+    }
+  
+    fseek(fp, 0, SEEK_SET);
+    
+    buf_ensure(buf, fsize);
+
+    int nread = fread(buf->data + buf->size, fsize, 1, fp);
+
+    if (nread != 1) {
+        fprintf(stderr, "error reading %s\n\n", filename);
+        exit(1);
+    }
+
+    buf->size += fsize;
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void new_shader_source() {
+    
+    char lineno[256];
+    snprintf(lineno, 256, "\n#line 0 %d\n", shader_count++);
+    buf_append(&shader_buf, lineno, strlen(lineno));
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
+
+    buffer_t* buf = (buffer_t*)b;
+
+    buf_append(buf, ptr, size*nmemb);
+    
+    return size * nmemb;
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
+json_t* js_object(const json_t* object,
+                              const char* key,
+                              int type) {
+
+    json_t* j = json_object_get(object, key);
+    
+    if (!j) {
+        fprintf(stderr, "error: JSON key not found: %s\n", key);
+        exit(1);
+    }
+
+    if (json_typeof(j) != type) {
+        fprintf(stderr, "error: incorrect type for %s in JSON\n", key);
+        exit(1);
+    }
+
+    return j;
+    
+}
+
+json_t* js_array(const json_t* array,
+                             int idx,
+                             int type) {
+
+    json_t* j = json_array_get(array, idx);
+    
+    if (!j) {
+        fprintf(stderr, "error: array item %d not found in JSON\n", idx);
+        exit(1);
+    }
+
+    if (json_typeof(j) != type) {
+        fprintf(stderr, "error: incorrect type for array item %d in JSON\n", idx);
+        exit(1);
+    }
+
+    return j;
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void load_json() {
+
+    json_error_t error;
+
+    json_root = json_loads(json_buf.data, 0, &error);
+
+    if (!json_root) {
+        fprintf(stderr, "error: on line %d: %s\n", error.line, error.text);
+        exit(1);
+    }
+
+    if (!json_is_object(json_root)) {
+        fprintf(stderr, "expected JSON root to be object!\n");
+        exit(1);
+    }
+
+    json_t* shader = js_object(json_root, "Shader", JSON_OBJECT);
+    json_t* renderpass = js_object(shader, "renderpass", JSON_ARRAY);
+
+    size_t len = json_array_size(renderpass);
+    if (len != 1) {
+        fprintf(stderr, "multipass not yet implemented!\n");
+        exit(1);
+    }
+
+    json_t* image = js_array(renderpass, len-1, JSON_OBJECT);
+
+    json_t* inputs = js_object(image, "inputs", JSON_ARRAY);
+    int ninputs = json_array_size(inputs);
+
+    for (int i=0; i<ninputs; ++i) {
+        
+        json_t* input_i = js_array(inputs, i, JSON_OBJECT);
+        
+        int channel = json_integer_value(js_object(input_i, "channel", JSON_INTEGER));
+        const char* ctype = json_string_value(js_object(input_i, "ctype", JSON_STRING));
+        //const char* src = json_string_value(js_object(input_i, "src", JSON_STRING));
+
+        if (!strcmp(ctype, "keyboard")) {
+            key_channel = channel;
+            samplers[key_channel].type = GL_SAMPLER_2D;
+        } else {
+            fprintf(stderr, "unsupported input type: %s\n", ctype);
+            exit(1);
+        }
+        
+    }
+    
+    const char* code_string = json_string_value(js_object(image, "code", JSON_STRING));
+
+    new_shader_source();
+    buf_append(&shader_buf, code_string, strlen(code_string));
+
+    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
+    
+}
+
+
+//////////////////////////////////////////////////////////////////////
+
+void load_json_file(const char* filename) {
+
+    buf_read_file(&json_buf, filename);
+    load_json();
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void load_shadertoy(const char* id) {
+
+    char url[1024];
+    
+    snprintf(url, 1024,
+             "http://www.shadertoy.com/api/v1/shaders/%s?key=%s", id, api_key);
+
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    CURL* curl = curl_easy_init();
+
+    if (!curl) {
+        fprintf(stderr, "error initting curl!\n");
+        exit(1);
+    }
+
+
+    json_buf.data = malloc(MAX_PROGRAM_LENGTH);
+    json_buf.alloc = MAX_PROGRAM_LENGTH;
+    json_buf.size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
+    
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_response);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &json_buf);
+
+    printf("fetching %s...\n", url);
+    
+    int status = curl_easy_perform(curl);
+
+    if (status != 0) {
+        fprintf(stderr, "curl error %s\n", curl_easy_strerror(status));
+        exit(1);
+    }
+
+    long code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+
+    if (code != 200) {
+        fprintf(stderr, "server responded with code %ld\n", code);
+        exit(1);
+    }
+
+    printf("got data of length %d\n", (int)json_buf.size);
+
+    load_json();
+    
+}
+
+
+//////////////////////////////////////////////////////////////////////
+
+void dieusage() {
+    
+    fprintf(stderr,
+            "usage: st_glfw [OPTIONS] (-id SHADERID | BUNDLE.json | SHADER1.glsl [SHADER2.glsl ...])\n"
+            "\n"
+            "OPTIONS:\n"
+            "  -id        SHADERID  Load specified shader from Shadertoy.com\n"
+            "  -apikey    KEY       Set Shadertoy.com API key (needed to load shaders)\n"
+            "  -geometry  WxH       Initialize window with width W and height H\n"
+            "  -speedup   FACTOR    Speed up by this factor\n"
+            "  -frames    COUNT     Record COUNT frames to PNG\n"
+            "  -duration  TIME      Record TIME seconds to PNG\n"
+            "  -fps       FPS       Target FPS for recording\n"
+            "  -starttime TIME      Starting value of iTime uniform in seconds\n"
+            "  -paused              Start out paused\n"
+            "\n"
+            );
+  
+    exit(1);
+  
+}
+
+//////////////////////////////////////////////////////////////////////
+
+
+void load_shader(const char* filename) {
+
+
+    new_shader_source();
+    buf_read_file(&shader_buf, filename);
+
+    fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = shader_buf.data;
+
+  
+}
+
+//////////////////////////////////////////////////////////////////////
+
+int is_json(const char* filename) {
+
+    const char* extension = strrchr(filename, '.');
+    if (!extension) { return 0; }
+
+    return (strlen(extension) > 2 &&
+            tolower(extension[1]) == 'j' &&
+            tolower(extension[2]) == 's');
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+double getdouble(int argc, char** argv, int i) {
+    if (i >= argc) {
+        fprintf(stderr, "error: expected number for %s\n", argv[i-1]);
+        dieusage();
+    }
+    char* endptr;
+    double x = strtod(argv[i], &endptr);
+    if (!endptr || *endptr || x <= 0.0) {
+        fprintf(stderr, "error: expected positive number for %s\n", argv[i-1]);
+        dieusage();
+    }
+    return x;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+long getint(int argc, char** argv, int i) {
+    if (i >= argc) {
+        fprintf(stderr, "error: expected number for %s\n", argv[i-1]);
+        dieusage();
+    }
+    char* endptr;
+    long x = strtol(argv[i], &endptr, 10);
+    if (!endptr || *endptr || x < 0) {
+        fprintf(stderr, "error: expected non-negative number for %s\n", argv[i-1]);
+        dieusage();
+    }
+    return x;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void get_options(int argc, char** argv) {
+
+    double rduration = 0.0;
+
+    int input_start = argc;
+    int force_files = 0;
+    
+    for (int i=1; i<input_start; ++i) {
+
+        if (!strcmp(argv[i], "-record")) {
+            
+            recording = 1;
+            
+        } else if (!strcmp(argv[i], "-geometry")) {
+            
+            if (i+1 >= argc) {
+                fprintf(stderr, "error: expected WxH for -geometry\n");
+                dieusage();
+            }
+            
+            int chars;
+            
+            if (sscanf(argv[i+1], "%dx%d%n", window_size+0, window_size+1, &chars) != 2 ||
+                argv[i+1][chars] != '\0') {
+                fprintf(stderr, "error: bad format for -geometry\n");
+                dieusage();
+            }
+            
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-speedup")) {
+            
+            speedup = getdouble(argc, argv, i+1);
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-paused")) {
+            
+            animating = 0;
+            
+        } else if (!strcmp(argv[i], "-starttime")) {
+            
+            starttime = getdouble(argc, argv, i+1);
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-duration")) {
+            
+            recording = 1;
+            rduration = getdouble(argc, argv, i+1);
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-frames")) {
+            
+            recording = 1;
+            record_frames = getint(argc, argv, i+1);
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-keyboard")) {
+            
+            key_channel = getint(argc, argv, i+1);
+            
+            if (key_channel < 0 || key_channel >= 4) {
+                fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
+                exit(1);
+            }
+
+            samplers[key_channel].type = GL_SAMPLER_2D;
+
+            i += 1;
+            
+        } else if (!strcmp(argv[i], "-fps")) {
+            
+            target_frame_duration = 1.0 / getdouble(argc, argv, i+1);
+            i += 1;
+
+        } else if (!strcmp(argv[i], "-id")) {
+
+            if (i+1 >= argc) {
+                fprintf(stderr, "error: expected id for %s\n", argv[i]);
+                dieusage();
+            }
+            
+            shadertoy_id = argv[i+1];
+            i += 1;
+
+        } else if (!strcmp(argv[i], "-id")) {
+
+            if (i+1 >= argc) {
+                fprintf(stderr, "error: expected id for %s\n", argv[i]);
+                dieusage();
+            }
+            
+            shadertoy_id = argv[i+1];
+            i += 1;
+
+        } else if (!strcmp(argv[i], "-apikey")) {
+
+            if (i+1 >= argc) {
+                fprintf(stderr, "error: expected key for %s\n", argv[i]);
+                dieusage();
+            }
+            
+            api_key = argv[i+1];
+            i += 1;
+            
+        } else {
+            
+            char* tmp = argv[i];
+            
+            for (int j=i; j<argc-1; ++j) {
+                argv[j] = argv[j+1];
+            }
+
+            argv[argc-1] = tmp;
+            input_start -=1;
+            i -= 1;
+            
+        }
+
+
+    }
+
+    if (recording && rduration) {
+        record_frames = floor(rduration / (target_frame_duration * speedup));
+    }
+
+    if (recording) {
+        printf("will record for %d frames\n", record_frames);
+    }
+
+    if (shadertoy_id) {
+
+        if (input_start != argc) {
+            fprintf(stderr, "error: can't specify shadertoy ID and GLSL source!\n");
+            exit(1);
+        }
+
+        if (!api_key) {
+            fprintf(stderr, "error: must set shadertoy API key from command line!\n");
+            exit(1);
+        }
+        
+        load_shadertoy(shadertoy_id);
+        
+    } else {
+        
+        for (int i=input_start; i<argc; ++i) {
+            
+            if (is_json(argv[i])) {
+                
+                if (input_start != argc - 1) {
+                    fprintf(stderr, "error: can't specify more than one JSON input!\n");
+                }
+                
+                load_json_file(argv[i]);
+                
+            } else {
+                
+                load_shader(argv[i]);
+                
+            }
+        }
+        
+    }
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main(int argc, char** argv) {
     
     memset(samplers, 0, sizeof(samplers));
 
     get_options(argc, argv);
+
     
     GLFWwindow* window = setup_window();
 
@@ -1029,7 +1366,9 @@ int main(int argc, char** argv) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
-    free(shader);
+    if (shader_buf.data) { free(shader_buf.data); }
+    if (json_root) { json_decref(json_root); }
+    if (json_buf.data) { free(json_buf.data); }
     
     return 0;
     
