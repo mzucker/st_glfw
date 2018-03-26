@@ -157,7 +157,7 @@ void read_jpg(const buffer_t* raw,
         fprintf(stderr, "warning: bad stride for GL_UNPACK_ALIGNMENT!\n");
     }
         
-    buf_ensure(dst, size);
+    buf_grow(dst, size);
 
     int row_delta;
     unsigned char* rowptr = get_rowptr_and_delta(dst, height, row_stride,
@@ -283,7 +283,7 @@ void read_png(const buffer_t* raw,
     *psize = size;
     *pchannels = channels;
 
-    buf_ensure(dst, size);
+    buf_grow(dst, size);
 
     int row_delta;
     unsigned char* rowptr = get_rowptr_and_delta(dst, height, row_stride,

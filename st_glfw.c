@@ -723,7 +723,7 @@ void setup_keyboard(int channel) {
     c->filter = GL_NEAREST;
     c->wrap = GL_CLAMP_TO_EDGE;
 
-    buf_ensure(&(c->texture), KEYMAP_TOTAL_BYTES);
+    buf_grow(&(c->texture), KEYMAP_TOTAL_BYTES);
 
     keymap = (unsigned char*)c->texture.data;
 

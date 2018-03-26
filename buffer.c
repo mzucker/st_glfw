@@ -5,7 +5,7 @@
 
 //////////////////////////////////////////////////////////////////////
 
-void buf_ensure(buffer_t* buf, size_t len) {
+void buf_grow(buffer_t* buf, size_t len) {
 
     size_t new_size = buf->size + len;
     
@@ -40,7 +40,7 @@ void buf_free(buffer_t* buf) {
 
 void buf_append(buffer_t* buf, const void* src, size_t len) {
 
-    buf_ensure(buf, len+1);
+    buf_grow(buf, len+1);
     
     memcpy(buf->data + buf->size, src, len);
     
@@ -70,7 +70,7 @@ void buf_read_file(buffer_t* buf, const char* filename,
   
     fseek(fp, 0, SEEK_SET);
     
-    buf_ensure(buf, fsize+1);
+    buf_grow(buf, fsize+1);
 
     int nread = fread(buf->data + buf->size, fsize, 1, fp);
 
