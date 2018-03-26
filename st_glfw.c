@@ -423,9 +423,11 @@ void render(GLFWwindow* window) {
 
     double frame_start = glfwGetTime();
 
-    printf("about to render, time=%f, since last=%f, delta=%f, target=%f\n",
-           u_time, (frame_start - last_frame_start), u_time_delta,
-           target_frame_duration);
+    if (0) {
+        printf("about to render, time=%f, since last=%f, delta=%f, target=%f\n",
+               u_time, (frame_start - last_frame_start), u_time_delta,
+               target_frame_duration);
+    }
     
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -854,11 +856,12 @@ void buf_ensure(buffer_t* buf, size_t len) {
 
 void buf_append(buffer_t* buf, const void* src, size_t len) {
 
-    buf_ensure(buf, len);
+    buf_ensure(buf, len+1);
     
     memcpy(buf->data + buf->size, src, len);
     
     buf->size += len;
+    buf->data[buf->size] = 0;
 
 }
 
@@ -879,7 +882,7 @@ void buf_read_file(buffer_t* buf, const char* filename) {
   
     fseek(fp, 0, SEEK_SET);
     
-    buf_ensure(buf, fsize);
+    buf_ensure(buf, fsize+1);
 
     int nread = fread(buf->data + buf->size, fsize, 1, fp);
 
@@ -889,6 +892,7 @@ void buf_read_file(buffer_t* buf, const char* filename) {
     }
 
     buf->size += fsize;
+    buf->data[buf->size] = 0;
 
 }
 
@@ -1342,7 +1346,6 @@ int main(int argc, char** argv) {
 
     get_options(argc, argv);
 
-    
     GLFWwindow* window = setup_window();
 
     setup_shaders();
@@ -1352,7 +1355,7 @@ int main(int argc, char** argv) {
     setup_textures();
 
     reset();
-    
+
     while (!glfwWindowShouldClose(window)) {
 
         if (animating || recording || need_render) {
