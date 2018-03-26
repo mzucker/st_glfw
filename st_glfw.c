@@ -899,7 +899,7 @@ void setup_textures() {
                                                       channels[i].name);
         
     
-            glActiveTexture(GL_TEXTURE0);
+            glActiveTexture(GL_TEXTURE0 + i);
             glUniform1i(channel_loc, i);
 
             glGenTextures(1, &channels[i].tex_id);
