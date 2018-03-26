@@ -120,6 +120,7 @@ typedef enum texture_ctype {
     CTYPE_TEXTURE = 1,
     CTYPE_KEYBOARD = 2,
     CTYPE_CUBEMAP = 3,
+    CTYPE_BUFFER = 4,
 } texture_ctype_t;
 
 typedef struct channel {
@@ -129,6 +130,8 @@ typedef struct channel {
 
     GLuint target;
     GLuint tex_id;
+
+    int src_id;
     
     int filter;
     int srgb;
@@ -157,6 +160,8 @@ typedef struct renderbuffer {
 
     buffer_t shader_buf;
     int shader_count;
+
+    int output_id;
     
     channel_t channels[NUM_CHANNELS];
     
@@ -878,6 +883,25 @@ void load_json() {
         renderbuffer_t* rb = renderbuffers + num_renderbuffers;
         ++num_renderbuffers;
 
+        json_t* outputs = jsobject(renderstep, "outputs", JSON_ARRAY);
+        int nout = json_array_size(outputs);
+        
+        if (!nout) {
+            
+            rb->output_id = -1;
+            
+        } else {
+            
+            if (nout != 1) {
+                fprintf(stderr, "expected render pass to have 0 or 1 outputs!\n");
+                exit(1);
+            }
+            
+            json_t* output = jsarray(outputs, 0, JSON_OBJECT);
+            rb->output_id = jsobject_integer(output, "id");
+
+        }
+
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
         int ninputs = json_array_size(inputs);
 
@@ -981,6 +1005,11 @@ void load_json() {
                     load_image(channel, src_i);
                 
                 }
+
+            } else if (!strcmp(ctype, "buffer")) {
+
+                channel->src_id = jsobject_integer(input_i, "id");
+                printf("temporarily ignoring buffer input!\n");
             
             } else {
             
