@@ -164,6 +164,8 @@ int num_renderbuffers = 0;
 
 GLubyte keymap[KEYMAP_TOTAL_BYTES];
 
+int last_key = -1;
+
 GLubyte* key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
 GLubyte* key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
 GLubyte* key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
@@ -715,8 +717,6 @@ void render(GLFWwindow* window) {
 
     }
 
-    memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-    
     glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1347,25 +1347,31 @@ void key_callback(GLFWwindow* window, int key,
             printf("saving a screenshot!\n");
             single_shot = 1;
 
-        } else if (key < 256) {
+        } else if (key >= 0 && key < 256) {
 
             for (int c=0; c<3; ++c) {
                 key_press[3*key+c] = 255;
+                if (last_key != key) {
+                    key_press[3*last_key+c] = 0;
+                }
                 key_toggle[3*key+c] = ~key_toggle[3*key+c];
                 key_state[3*key+c] = 255;
             }
 
+            last_key = key;
+            printf("press %d\n", key);
+
         }
         
-    } else { 
+    } else if (action == GLFW_RELEASE && key >= 0 && key < 256) {
 
-        memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-        if (key_state[3*key]) {
-            for (int c=0; c<3; ++c) {
-                key_state[3*key+c] = 0;
-            }
+        for (int c=0; c<3; ++c) {
+            key_state[3*key+c] = 0;
+            key_press[3*key+c] = 0;
         }
 
+        printf("release %d\n", key);
+        
     }
 
     need_render = 1;
