@@ -493,19 +493,19 @@ void setup_textures() {
                 mag = GL_LINEAR;
             }
         
-            glTexParameteri(GL_TEXTURE_2D,
+            glTexParameteri(channels[i].target,
                             GL_TEXTURE_MAG_FILTER,
                             mag);
             
-            glTexParameteri(GL_TEXTURE_2D,
+            glTexParameteri(channels[i].target,
                             GL_TEXTURE_MIN_FILTER,
                             channels[i].filter);
 
-            glTexParameteri(GL_TEXTURE_2D,
+            glTexParameteri(channels[i].target,
                             GL_TEXTURE_WRAP_S,
                             channels[i].wrap);
 
-            glTexParameteri(GL_TEXTURE_2D,
+            glTexParameteri(channels[i].target,
                             GL_TEXTURE_WRAP_T,
                             channels[i].wrap);
 
