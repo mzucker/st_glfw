@@ -17,4 +17,4 @@ pkg_check_modules(CURL REQUIRED libcurl)
 pkg_check_modules(GLEW REQUIRED glew)
 
 add_executable(st_glfw st_glfw.c)
-target_link_libraries(st_glfw glfw ${GLEW_LIBRARIES} ${OPENGL_LIBRARIES} ${JANSSON_LIBRARIES} ${CURL_LIBRARIES} png m)
+target_link_libraries(st_glfw glfw ${GLEW_LIBRARIES} ${OPENGL_LIBRARIES} ${JANSSON_LIBRARIES} ${CURL_LIBRARIES} png jpeg m)

@@ -6,11 +6,17 @@
 #include <sys/time.h>
 #include <math.h>
 #include <png.h>
+#include <jpeglib.h>
 #include <ctype.h>
-#include <assert.h>
 
 #include <jansson.h>
 #include <curl/curl.h>
+
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
+#include <assert.h>
 
 //////////////////////////////////////////////////////////////////////
 
@@ -18,16 +24,17 @@ enum {
     
     MAX_UNIFORMS = 16,
     
-    MAX_SAMPLERS = 4,
-    MAX_SAMPLER_NAME_LENGTH = 16,
-    MAX_SAMPLER_DECL_LENGTH = 64,
+    MAX_CHANNELS = 4,
+    MAX_CHANNEL_NAME_LENGTH = 16,
+    MAX_CHANNEL_DECL_LENGTH = 64,
     
     BIG_STRING_LENGTH = 1024,
     MAX_PROGRAM_LENGTH = 1024*256,
     MAX_FILE_LENGTH = 1024*1024*1024, // 1GB
     
     KEYMAP_ROWS = 3,
-    KEYMAP_BYTES_PER_ROW = 256*3
+    KEYMAP_BYTES_PER_ROW = 256*3,
+    KEYMAP_TOTAL_BYTES = KEYMAP_ROWS * KEYMAP_BYTES_PER_ROW
     
 };
 
@@ -55,6 +62,13 @@ int num_uniforms = 0;
 
 //////////////////////////////////////////////////////////////////////
 
+typedef struct enum_info {
+    const char* string;
+    int value;
+} enum_info_t;
+
+//////////////////////////////////////////////////////////////////////
+
 typedef struct buffer {
     
     char*  data;
@@ -63,27 +77,41 @@ typedef struct buffer {
     
 } buffer_t;
 
-typedef struct sampler {
+typedef enum texture_ctype {
+    CTYPE_NONE = 0,
+    CTYPE_TEXTURE = 1,
+    CTYPE_KEYBOARD = 2,
+} texture_ctype_t;
 
-    GLenum type; // e.g. GL_SAMPLER_2D
-    char name[MAX_SAMPLER_NAME_LENGTH];
+typedef struct channel {
 
-    buffer_t raw_buf;
-    buffer_t decoded_buf;
+    texture_ctype_t ctype;
+    char name[MAX_CHANNEL_NAME_LENGTH];
+    int width, height;
+
+    GLuint tex_id;
     
-} sampler_t;
+    int filter;
+    int srgb;
+    int vflip;
+    int wrap;
 
-sampler_t samplers[MAX_SAMPLERS];
+    buffer_t texture;
+
+    int dirty;
+    
+} channel_t;
+
+channel_t channels[MAX_CHANNELS];
 
 //////////////////////////////////////////////////////////////////////
 
-GLubyte keymap[KEYMAP_ROWS * KEYMAP_BYTES_PER_ROW];
 
-GLubyte* key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
-GLubyte* key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
-GLubyte* key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
+GLubyte* keymap = NULL;
 
-int key_channel = -1;
+GLubyte* key_state = NULL;
+GLubyte* key_toggle = NULL;
+GLubyte* key_press = NULL;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -406,11 +434,29 @@ void reset() {
     u_frame = 0;
     u_mouse[0] = u_mouse[1] = u_mouse[2] = u_mouse[3] = -1;
 
-    if (key_channel >= 0) {
-        memset(keymap, 0, sizeof(keymap));
-    }
+    if (keymap) { memset(keymap, 0, KEYMAP_TOTAL_BYTES); }
 
     need_render = 1;
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void update_teximage(channel_t* c) {
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                 c->width,
+                 c->height, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE,
+                 c->texture.data);
+
+    if (c->filter == GL_LINEAR_MIPMAP_LINEAR) {
+
+        glGenerateMipmap(GL_TEXTURE_2D);
+                
+    }
+
+    c->dirty = 0;
 
 }
 
@@ -454,13 +500,20 @@ void render(GLFWwindow* window) {
     set_uniforms();
     check_opengl_errors("after set uniforms");
 
-    if (key_channel >= 0) {
-    
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 3, 0,
-                     GL_RGB, GL_UNSIGNED_BYTE, keymap);
+    for (int i=0; i<MAX_CHANNELS; ++i) {
 
+        if (channels[i].dirty || channels[i].ctype == CTYPE_KEYBOARD) {
+
+            glBindTexture(GL_TEXTURE_2D, channels[i].tex_id);
+
+            update_teximage(&channels[i]);
+
+        }
+        
+    }
+
+    if (keymap) {
         memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
-
     }
     
     glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
@@ -579,7 +632,7 @@ void key_callback(GLFWwindow* window, int key,
             printf("saving a screenshot!\n");
             single_shot = 1;
 
-        } else if (key < 256) {
+        } else if (key < 256 && keymap) {
 
             for (int c=0; c<3; ++c) {
                 key_press[3*key+c] = 255;
@@ -589,7 +642,7 @@ void key_callback(GLFWwindow* window, int key,
 
         }
         
-    } else { // release
+    } else if (keymap) { // release
 
         memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
         if (key_state[3*key]) {
@@ -665,6 +718,8 @@ GLFWwindow* setup_window() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
 #endif
+
+    glfwWindowHint(GLFW_DOUBLEBUFFER, GL_TRUE);
     
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
                                           "Shadertoy GLFW", NULL, NULL);
@@ -697,29 +752,30 @@ void setup_shaders() {
     GLuint vertex_shader = make_shader(GL_VERTEX_SHADER, 1,
                                        vertex_src);
 
-    char sbuf[MAX_SAMPLERS][MAX_SAMPLER_DECL_LENGTH];
+    char sbuf[MAX_CHANNELS][MAX_CHANNEL_DECL_LENGTH];
     
-    for (int i=0; i<MAX_SAMPLERS; ++i) {
+    for (int i=0; i<MAX_CHANNELS; ++i) {
 
-        if (samplers[i].type != 0) {
+        if (channels[i].ctype != CTYPE_NONE) {
 
             const char* stype = 0;
 
-            switch (samplers[i].type) {
-            case GL_SAMPLER_2D:
+            switch (channels[i].ctype) {
+            case CTYPE_TEXTURE:
+            case CTYPE_KEYBOARD:
                 stype = "sampler2D";
                 break;
             default:
-                fprintf(stderr, "invalid sampler type!\n");
+                fprintf(stderr, "invalid channel type!\n");
                 exit(1);
             }
 
-            snprintf(samplers[i].name, MAX_SAMPLER_NAME_LENGTH,
+            snprintf(channels[i].name, MAX_CHANNEL_NAME_LENGTH,
                      "iChannel%d", i);
 
-            snprintf(sbuf[i], MAX_SAMPLER_DECL_LENGTH,
+            snprintf(sbuf[i], MAX_CHANNEL_DECL_LENGTH,
                      "uniform %s %s; ",
-                     stype, samplers[i].name);
+                     stype, channels[i].name);
 
             fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
             
@@ -806,28 +862,47 @@ void setup_array() {
 
 void setup_textures() {
 
-    if (key_channel >= 0) {
+    for (int i=0; i<4; ++i) {
+
+        if (channels[i].ctype) {
+
+            GLuint channel_loc = glGetUniformLocation(program,
+                                                      channels[i].name);
         
-        GLuint channel_loc = glGetUniformLocation(program,
-                                                  samplers[key_channel].name);
+    
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(channel_loc, i);
+
+            glGenTextures(1, &channels[i].tex_id);
+            glBindTexture(GL_TEXTURE_2D, channels[i].tex_id);
+
+            int mag = channels[i].filter;
+            if (mag == GL_LINEAR_MIPMAP_LINEAR) {
+                mag = GL_LINEAR;
+            }
         
-        memset(keymap, 0, sizeof(keymap));
-    
-        glActiveTexture(GL_TEXTURE0 + 0);
-        glUniform1i(channel_loc, 0);
+            glTexParameteri(GL_TEXTURE_2D,
+                            GL_TEXTURE_MAG_FILTER,
+                            mag);
+            
+            glTexParameteri(GL_TEXTURE_2D,
+                            GL_TEXTURE_MIN_FILTER,
+                            channels[i].filter);
 
-        GLuint tex_id;
+            glTexParameteri(GL_TEXTURE_2D,
+                            GL_TEXTURE_WRAP_S,
+                            channels[i].wrap);
 
-        glGenTextures(1, &tex_id);
-        glBindTexture(GL_TEXTURE_2D, tex_id);
-    
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 3, 0,
-                     GL_RGB, GL_UNSIGNED_BYTE, keymap);
-    
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D,
+                            GL_TEXTURE_WRAP_T,
+                            channels[i].wrap);
 
-        check_opengl_errors("after dealing with iChannel0");
+            glBindTexture(GL_TEXTURE_2D, 0);
+            
+
+            check_opengl_errors("after dealing with channel");
+
+        }
         
     }
 
@@ -856,7 +931,13 @@ void buf_ensure(buffer_t* buf, size_t len) {
     assert(buf->alloc >= new_size);
 
 }
-    
+
+void buf_free(buffer_t* buf) {
+
+    if (buf->data) { free(buf->data); }
+    memset(buf, 0, sizeof(buffer_t));
+
+}
 
 void buf_append(buffer_t* buf, const void* src, size_t len) {
 
@@ -926,8 +1007,8 @@ size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
 //////////////////////////////////////////////////////////////////////
 
 json_t* js_object(const json_t* object,
-                              const char* key,
-                              int type) {
+                  const char* key,
+                  int type) {
 
     json_t* j = json_object_get(object, key);
     
@@ -942,6 +1023,22 @@ json_t* js_object(const json_t* object,
     }
 
     return j;
+    
+}
+
+const char* js_object_string(const json_t* object,
+                             const char* key) {
+
+    json_t* j = js_object(object, key, JSON_STRING);
+    return json_string_value(j);
+    
+}
+
+int js_object_integer(const json_t* object,
+                      const char* key) {
+
+    json_t* j = js_object(object, key, JSON_INTEGER);
+    return json_integer_value(j);
     
 }
 
@@ -980,18 +1077,112 @@ const char* get_extension(const char* filename) {
 
 //////////////////////////////////////////////////////////////////////
 
-void read_jpg(const buffer_t* raw,
-              buffer_t* decoded) {
+void setup_keyboard(int channel) {
 
-    fprintf(stderr, "jpeg decoding not supported yet!\n");
-    exit(1);
+    channel_t* c = channels + channel;
+
+    c->ctype = CTYPE_KEYBOARD;
+    c->width = KEYMAP_BYTES_PER_ROW / 3;
+    c->height = KEYMAP_ROWS;
+
+    c->filter = GL_NEAREST;
+    c->wrap = GL_CLAMP_TO_EDGE;
+
+    c->dirty = 1;
+
+    buf_ensure(&(c->texture), KEYMAP_TOTAL_BYTES);
+
+    keymap = (unsigned char*)c->texture.data;
+
+    key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
+    key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
+    key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
+
+    memset(keymap, 0, KEYMAP_TOTAL_BYTES);
+
+    c->texture.size = KEYMAP_TOTAL_BYTES;
+
+}
+    
+
+//////////////////////////////////////////////////////////////////////
+
+void read_jpg(const buffer_t* raw,
+              channel_t* channel) {
+
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr mgr;
+    jmp_buf setjmp_buffer;
+
+    cinfo.err = jpeg_std_error(&mgr);
+
+    if (setjmp(setjmp_buffer)) {
+        jpeg_destroy_decompress(&cinfo);
+    }
+
+    jpeg_create_decompress(&cinfo);
+
+    jpeg_mem_src(&cinfo, (unsigned char*)raw->data, raw->size);
+
+    int rc = jpeg_read_header(&cinfo, TRUE);
+
+    if (rc != 1) {
+        fprintf(stderr, "failure reading jpeg header!\n");
+        exit(1);
+    }
+
+    jpeg_start_decompress(&cinfo);
+
+    int width = cinfo.output_width;
+    int height = cinfo.output_height;
+    int pixel_size = cinfo.output_components;
+
+    printf("jpeg is %dx%dx%d\n", width, height, pixel_size);
+
+    if (width <= 0 || height <= 0 || pixel_size != 3) {
+        fprintf(stderr, "incorrect JPG type!\n");
+        exit(1);
+    }
+
+    int size = width * height * pixel_size;
+    int row_stride = width * pixel_size;
+
+    buffer_t* decoded = &(channel->texture);
+    
+    buf_ensure(decoded, size);
+
+    unsigned char* rowptr;
+    int row_delta;
+
+    if (channel->vflip) {
+        rowptr = (unsigned char*)decoded->data + (height-1)*row_stride;
+        row_delta = -row_stride;
+    } else {
+        rowptr = (unsigned char*)decoded->data;
+        row_delta = row_stride;
+    }
+
+    while (cinfo.output_scanline < cinfo.output_height) {
+        
+        jpeg_read_scanlines(&cinfo, &rowptr, 1);
+        rowptr += row_delta;
+        
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    channel->ctype = CTYPE_TEXTURE;
+    channel->width = width;
+    channel->height = height;
+    channel->dirty = 1;
 
 }
 
 //////////////////////////////////////////////////////////////////////
 
 void read_png(const buffer_t* raw,
-              buffer_t* decoded) {
+              channel_t* channel) {
 
     fprintf(stderr, "png decoding not supported yet!\n");
     exit(1);
@@ -1043,6 +1234,23 @@ void fetch_url(const char* url, buffer_t* buf) {
 
 //////////////////////////////////////////////////////////////////////
 
+int lookup_enum(const enum_info_t* enums, const char* value) {
+    
+    for (int i=0; enums[i].string; ++i) {
+
+        if (!strcmp(enums[i].string, value)) {
+            return enums[i].value;
+        }
+        
+    }
+
+    fprintf(stderr, "error: no matching value for %s\n", value);
+    exit(1);
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void load_json() {
 
     json_error_t error;
@@ -1077,32 +1285,72 @@ void load_json() {
         
         json_t* input_i = js_array(inputs, i, JSON_OBJECT);
         
-        int channel = json_integer_value(js_object(input_i, "channel", JSON_INTEGER));
-        const char* ctype = json_string_value(js_object(input_i, "ctype", JSON_STRING));
+        int channel = js_object_integer(input_i, "channel");
+        
+        if (channel < 0 || channel >= MAX_CHANNELS) {
+            fprintf(stderr, "invalid channel for input %d\n", i);
+            exit(1);
+        }
+
+        channel_t* dst_c = channels + channel;
+
+        json_t* sampler = js_object(input_i, "sampler", JSON_OBJECT);
+
+        const enum_info_t filter_enums[] = {
+            { "nearest", GL_NEAREST },
+            { "mipmap", GL_LINEAR },
+            { "linear", GL_LINEAR_MIPMAP_LINEAR },
+            { 0, -1 },
+        };
+
+        const enum_info_t tf_enums[] = {
+            { "true", 1 },
+            { "false", 0 },
+            { 0, -1 },
+        };
+
+        const enum_info_t wrap_enums[] = {
+            { "clamp", GL_CLAMP_TO_EDGE },
+            { "repeat", GL_REPEAT },
+            { 0, -1 },
+        };
+        
+        dst_c->filter = lookup_enum(filter_enums, 
+                                    js_object_string(sampler, "filter"));
+
+        dst_c->srgb = lookup_enum(tf_enums,
+                                  js_object_string(sampler, "srgb"));
+
+        dst_c->vflip = lookup_enum(tf_enums,
+                                   js_object_string(sampler, "vflip"));
+
+        dst_c->wrap = lookup_enum(wrap_enums,
+                                  js_object_string(sampler, "wrap"));
+        
+        
+        const char* ctype = js_object_string(input_i, "ctype");
 
         if (!strcmp(ctype, "keyboard")) {
             
-            key_channel = channel;
-            samplers[key_channel].type = GL_SAMPLER_2D;
+            setup_keyboard(channel);
             
         } else if (!strcmp(ctype, "texture")) {
 
-            const char* src = json_string_value(js_object(input_i, "src", JSON_STRING));
+            const char* src = js_object_string(input_i, "src");
 
-            buffer_t* raw = &samplers[channel].raw_buf;
-            buffer_t* decoded = &samplers[channel].decoded_buf;
-
+            buffer_t raw = { 0, 0, 0 };
+            
             if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
 
                 const char* filename = src+7;
-                buf_read_file(raw, filename);            
+                buf_read_file(&raw, filename);            
 
             } else {
             
                 char url[1024];
                 snprintf(url, 1024, "http://www.shadertoy.com%s", src);
 
-                fetch_url(url, raw);
+                fetch_url(url, &raw);
 
             }
 
@@ -1111,11 +1359,11 @@ void load_json() {
             if (!strcasecmp(extension, "jpg") ||
                 !strcasecmp(extension, "jpeg")) {
 
-                read_jpg(raw, decoded);
+                read_jpg(&raw, dst_c);
                 
             } else if (!strcasecmp(extension, "png")) {
 
-                read_png(raw, decoded);
+                read_png(&raw, dst_c);
 
             } else {
 
@@ -1123,8 +1371,8 @@ void load_json() {
                 exit(1);
                     
             }
-                
-            
+
+            buf_free(&raw);
             
         } else {
             fprintf(stderr, "unsupported input type: %s\n", ctype);
@@ -1310,15 +1558,15 @@ void get_options(int argc, char** argv) {
             i += 1;
             
         } else if (!strcmp(argv[i], "-keyboard")) {
-            
-            key_channel = getint(argc, argv, i+1);
+
+            int key_channel = getint(argc, argv, i+1);
             
             if (key_channel < 0 || key_channel >= 4) {
                 fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
                 exit(1);
             }
 
-            samplers[key_channel].type = GL_SAMPLER_2D;
+            setup_keyboard(key_channel);
 
             i += 1;
             
@@ -1428,7 +1676,7 @@ void get_options(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     
-    memset(samplers, 0, sizeof(samplers));
+    memset(channels, 0, sizeof(channels));
 
     curl_global_init(CURL_GLOBAL_ALL);
 
