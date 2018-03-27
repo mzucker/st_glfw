@@ -581,6 +581,74 @@ void texture_parameters(const channel_t* channel) {
 
 //////////////////////////////////////////////////////////////////////
 
+void clear_framebuffer(renderbuffer_t* rb) {
+
+    glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
+        
+    glFramebufferTexture2D(GL_FRAMEBUFFER,
+                           GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D,
+                           rb->draw_textures[rb->last_drawn],
+                           0);
+    
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    
+    require(status == GL_FRAMEBUFFER_COMPLETE);
+    
+    const GLfloat zero[4] = { 0, 0, 0, 0 };
+    
+    glClearBufferfv(GL_COLOR, 0, zero);
+    
+    check_opengl_errors("after clear");
+                
+}
+ 
+//////////////////////////////////////////////////////////////////////
+
+void setup_framebuffer(renderbuffer_t* rb) {
+
+    glGenTextures(2, rb->draw_textures);
+        
+    for (int i=0; i<2; ++i) {
+
+        glBindTexture(GL_TEXTURE_2D, rb->draw_textures[i]);
+            
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                     framebuffer_size[0], framebuffer_size[1], 0,
+                     GL_RGBA, GL_FLOAT, 0);
+            
+        glBindTexture(GL_TEXTURE_2D, 0);
+            
+    }
+
+    rb->last_drawn = 1;
+    
+    glGenFramebuffers(1, &rb->framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER,
+                           GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D,
+                           rb->draw_textures[0],
+                           0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+    require(status == GL_FRAMEBUFFER_COMPLETE);
+        
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    rb->framebuffer_state = FRAMEBUFFER_OK;
+
+    check_opengl_errors("setup_textures framebuffer");
+
+}
+
 void setup_textures(renderbuffer_t* rb) {
 
     if (rb->output_id >= 0) {
@@ -588,50 +656,8 @@ void setup_textures(renderbuffer_t* rb) {
         dprintf("todo: setup framebuffer for %s to size %dx%d\n",
                 rb->name, framebuffer_size[0], framebuffer_size[1]);
 
-
-        glGenTextures(2, rb->draw_textures);
+        setup_framebuffer(rb);
         
-        for (int i=0; i<2; ++i) {
-
-            rb->last_drawn = i;
-
-            glBindTexture(GL_TEXTURE_2D, rb->draw_textures[i]);
-            
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                         framebuffer_size[0], framebuffer_size[1], 0,
-                         GL_RGBA, GL_FLOAT, 0);
-            
-            glBindTexture(GL_TEXTURE_2D, 0);
-            
-            
-        }
-
-        glGenFramebuffers(1, &rb->framebuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
-
-        glFramebufferTexture2D(GL_FRAMEBUFFER,
-                               GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D,
-                               rb->draw_textures[0],
-                               0);
-
-        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-
-        require(status == GL_FRAMEBUFFER_COMPLETE);
-        
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        rb->framebuffer_state = FRAMEBUFFER_OK;
-
-        check_opengl_errors("setup_textures framebuffer");
         
     }
 
@@ -684,29 +710,7 @@ void reset() {
         renderbuffer_t* rb = renderbuffers + j;
 
         if (rb->framebuffer) {
-
-            glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
-            
-            for (int i=0; i<2; ++i) {
-                
-                glFramebufferTexture2D(GL_FRAMEBUFFER,
-                                       GL_COLOR_ATTACHMENT0,
-                                       GL_TEXTURE_2D,
-                                       rb->draw_textures[i],
-                                       0);
-
-                GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-                
-                require(status == GL_FRAMEBUFFER_COMPLETE);
-
-                const GLfloat zero[4] = { 0, 0, 0, 0 };
-
-                glClearBufferfv(GL_COLOR, 0, zero);
-
-                check_opengl_errors("after clear");
-                
-            }
-            
+            clear_framebuffer(rb);
         }
         
     }
@@ -781,6 +785,11 @@ void screenshot() {
   
 }
 
+//////////////////////////////////////////////////////////////////////
+
+int min(int a, int b) {
+    return a < b ? a : b;
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -816,6 +825,46 @@ void render(GLFWwindow* window) {
 
         renderbuffer_t* rb = renderbuffers + num_renderbuffers - 1 - j;
 
+        if (rb->framebuffer &&
+            rb->framebuffer_state == FRAMEBUFFER_BADSIZE) {
+
+            GLint w, h;
+            
+            glBindTexture(GL_TEXTURE_2D, rb->draw_textures[rb->last_drawn]);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+            GLuint prev_framebuffer = rb->framebuffer;
+            
+            GLuint prev_textures[2] = {
+                rb->draw_textures[0],
+                rb->draw_textures[1]
+            };
+
+            setup_framebuffer(rb);
+            clear_framebuffer(rb);
+
+            int blitw = min(w, framebuffer_size[0]);
+            int blith = min(h, framebuffer_size[1]);
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, prev_framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, rb->framebuffer);
+
+            glBlitFramebuffer(0, 0, blitw, blith,
+                              0, 0, blitw, blith,
+                              GL_COLOR_BUFFER_BIT,
+                              GL_NEAREST);
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, rb->framebuffer);
+
+            glDeleteFramebuffers(1, &prev_framebuffer);
+            glDeleteTextures(2, prev_textures);
+
+            check_opengl_errors("after resizing fbo");
+            
+                   
+        }
+
         require(rb->framebuffer == 0 ||
                 rb->framebuffer_state == FRAMEBUFFER_OK);
 
@@ -845,6 +894,8 @@ void render(GLFWwindow* window) {
 
             if (channel->ctype == CTYPE_NONE) { continue; }
 
+            glActiveTexture(GL_TEXTURE0 + i);
+
             if (channel->ctype == CTYPE_BUFFER) {
 
                 require(channel->src_rb_idx >= 0 &&
@@ -853,9 +904,8 @@ void render(GLFWwindow* window) {
                 renderbuffer_t* src_rb = renderbuffers + channel->src_rb_idx;
 
                 GLuint src_tex = src_rb->draw_textures[src_rb->last_drawn];
-
-                glActiveTexture(GL_TEXTURE0 + i);
                 glBindTexture(GL_TEXTURE_2D, src_tex);
+
                 texture_parameters(channel);
 
                 if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
@@ -864,8 +914,7 @@ void render(GLFWwindow* window) {
 
             } else if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
 
-                glActiveTexture(GL_TEXTURE0 + i);
-                glBindTexture(channel->target, channel->tex_id);
+                glBindTexture(GL_TEXTURE_2D, channel->tex_id);
                 update_teximage(channel);
 
             }
