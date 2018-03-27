@@ -85,6 +85,50 @@ const char* jsobject_string(const json_t* object,
 
 //////////////////////////////////////////////////////////////////////
 
+json_t* jsobject_first(const json_t* object,
+                       const char** keys,
+                       int type,
+                       int* idx) {
+
+    for (int i=0; keys[i]; ++i) {
+
+        json_t* j = json_object_get(object, keys[i]);
+        if (!j) { continue; }
+        
+        if (json_typeof(j) != type) {
+            fprintf(stderr, "error: incorrect type for %s in JSON\n", keys[i]);
+            exit(1);
+        }
+
+        if (idx) { *idx = i; }
+        return j;
+        
+    }
+
+    fprintf(stderr, "error: none of the keys (");
+    for (int i=0; keys[i]; ++i) {
+        if (i)  { fprintf(stderr, ", "); }
+        fprintf(stderr, "%s", keys[i]);
+    }
+    fprintf(stderr, ") was found\n");
+    exit(1);
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
+const char* jsobject_first_string(const json_t* object,
+                                  const char** keys,
+                                  int* idx) {
+
+    json_t* j = jsobject_first(object, keys, JSON_STRING, idx);
+
+    return json_string_value(j);
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int jsobject_integer(const json_t* object,
                      const char* key) {
 

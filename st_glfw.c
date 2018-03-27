@@ -45,6 +45,8 @@ typedef struct uniform {
     
     const char* name;
     const void* src;
+    int array_length;
+    
     GLenum ptr_type;
 
     union {
@@ -93,6 +95,7 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "uniform float iTimeDelta; "
     "uniform vec4 iDate; "
     "uniform int iFrame; "
+    "uniform vec3 iChannelResolution[4]; "
     "float iGlobalTime; "
     "out vec4 fragColor; ",
 
@@ -203,6 +206,7 @@ GLfloat u_resolution[3]; // set every frame
 GLfloat u_mouse[4] = { -1, -1, -1, -1 }; 
 GLfloat u_time_delta = 0;
 GLfloat u_date[4]; // set every frame
+GLfloat u_channel_resolution[4][3]; // set per-buffer every frame
 
 GLint u_frame = 0;
 
@@ -239,6 +243,8 @@ const char* json_input = NULL;
 json_t* json_root = NULL;
 
 buffer_t json_buf = { 0, 0, 0 };
+
+buffer_t common_buf = { 0, 0, 0 };
 
 //////////////////////////////////////////////////////////////////////
 
@@ -309,7 +315,8 @@ GLuint make_shader(GLenum type,
 
 void add_uniform(const char* name,
                  const void* src,
-                 GLenum type) {
+                 GLenum type,
+                 int array_length) {
 
     if (num_uniforms >= MAX_UNIFORMS) {
         fprintf(stderr, "error: maximum # of uniforms exceeded, "
@@ -317,7 +324,7 @@ void add_uniform(const char* name,
         exit(1);
     }
 
-    uniform_t u = { name, src, 0 };
+    uniform_t u = { name, src, array_length };
 
     switch (type) {
     case GL_FLOAT:
@@ -473,12 +480,13 @@ void setup_array(renderbuffer_t* rb) {
 
 void setup_uniforms() {
 
-    add_uniform("iTime", &u_time, GL_FLOAT);
-    add_uniform("iResolution", u_resolution, GL_FLOAT_VEC3);
-    add_uniform("iMouse", u_mouse, GL_FLOAT_VEC4);
-    add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT);
-    add_uniform("iDate", &u_date, GL_FLOAT_VEC4);
-    add_uniform("iFrame", &u_frame, GL_INT);
+    add_uniform("iTime", &u_time, GL_FLOAT, 1);
+    add_uniform("iResolution", u_resolution, GL_FLOAT_VEC3, 1);
+    add_uniform("iMouse", u_mouse, GL_FLOAT_VEC4, 1);
+    add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT, 1);
+    add_uniform("iDate", &u_date, GL_FLOAT_VEC4, 1);
+    add_uniform("iFrame", &u_frame, GL_INT, 1);
+    add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, 4);
 
     check_opengl_errors("after setting up uniforms");
 
@@ -725,10 +733,10 @@ void set_uniforms(renderbuffer_t* rb) {
         const uniform_t* u = uinfo + i;
         switch (u->ptr_type) {
         case GL_FLOAT:
-            u->float_func(rb->uniform_handles[i], 1, (const GLfloat*)u->src);
+            u->float_func(rb->uniform_handles[i], u->array_length, (const GLfloat*)u->src);
             break;
         case GL_INT:
-            u->int_func(rb->uniform_handles[i], 1, (const GLint*)u->src);
+            u->int_func(rb->uniform_handles[i], u->array_length, (const GLint*)u->src);
             break;
         default:
             fprintf(stderr, "invalid pointer type in set_uniforms!\n");
@@ -914,6 +922,11 @@ void render(GLFWwindow* window) {
                 update_teximage(channel);
 
             }
+
+            u_channel_resolution[i][0] = channel->width;
+            u_channel_resolution[i][1] = channel->height;
+            u_channel_resolution[i][2] = 1.;
+            
         
         }
 
@@ -997,21 +1010,17 @@ void setup_keyboard(renderbuffer_t* rb, int cidx) {
 
 //////////////////////////////////////////////////////////////////////
 
-void load_image(channel_t* channel, const char* src) {
+void load_image(channel_t* channel, const char* src, int is_local_file) {
 
     buffer_t raw = { 0, 0, 0 };
             
-    if (strlen(src) > 7 && !memcmp(src, "file://", 7)) {
+    if (is_local_file) {
 
-        const char* filename = src+7;
-        buf_read_file(&raw, filename, MAX_FILE_LENGTH);            
+        buf_read_file(&raw, src, MAX_FILE_LENGTH);            
 
     } else {
-            
-        char url[1024];
-        snprintf(url, 1024, "http://www.shadertoy.com%s", src);
 
-        fetch_url(url, &raw);
+        fetch_url(src, &raw);
 
     }
 
@@ -1045,8 +1054,14 @@ void load_image(channel_t* channel, const char* src) {
 
 //////////////////////////////////////////////////////////////////////
 
-void load_inputs(renderbuffer_t* rb, json_t* inputs) {
+void load_inputs(renderbuffer_t* rb, json_t* inputs, int is_local) {
 
+    const char* src_strings[3] = { "src", NULL, NULL };
+    
+    if (is_local) {
+        src_strings[1] = "src_file";
+    }
+    
     int ninputs = json_array_size(inputs);
 
     for (int i=0; i<ninputs; ++i) {
@@ -1099,7 +1114,15 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
 
         const char* ctype = jsobject_string(input_i, "ctype");
 
-        const char* src = jsobject_string(input_i, "src");
+        int src_is_file = 0;
+        const char* src = jsobject_first_string(input_i, src_strings, &src_is_file);
+
+        char url[1024];
+
+        if (!src_is_file) { 
+            snprintf(url, 1024, "http://www.shadertoy.com%s", src);
+            src = url;
+       }
         
         if (!strcmp(ctype, "keyboard")) {
             
@@ -1109,7 +1132,8 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
             
             channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_TEXTURE;
-            load_image(channel, src);
+
+            load_image(channel, src, src_is_file);
 
         } else if (!strcmp(ctype, "cubemap")) {
             
@@ -1148,7 +1172,7 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
                 }
 
                 printf("loading %s\n", src_i);
-                load_image(channel, src_i);
+                load_image(channel, src_i, src_is_file);
                 
             }
 
@@ -1171,7 +1195,7 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
 
 //////////////////////////////////////////////////////////////////////
 
-void load_json() {
+void load_json(int is_local) {
 
     json_root = jsparse(&json_buf);
 
@@ -1183,8 +1207,12 @@ void load_json() {
     int image_index = -1;
     json_t* common = NULL;
 
-    dprintf("renderpass has length %d\n", (int)len);
-
+    const char* code_strings[3] = { "code", NULL, NULL };
+    
+    if (is_local) {
+        code_strings[1] = "code_file";
+    }
+    
     for (int i=0; i<len; ++i) {
 
         json_t* renderstep = jsarray(renderpass, i, JSON_OBJECT);
@@ -1236,12 +1264,20 @@ void load_json() {
 
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
 
-        load_inputs(rb, inputs);
+        load_inputs(rb, inputs, is_local);
 
-        const char* code_string = jsobject_string(renderstep, "code");
+        int code_is_file = 0;
+
+        const char* code_string = jsobject_first_string(renderstep, code_strings, &code_is_file);
 
         new_shader_source(rb);
-        buf_append(&rb->shader_buf, code_string, strlen(code_string));
+
+        if (code_is_file) {
+            buf_read_file(&rb->shader_buf, code_string, MAX_PROGRAM_LENGTH);
+        } else {
+            buf_append(&rb->shader_buf, code_string, strlen(code_string));
+        }
+        
         rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
 
         ++num_renderbuffers;
@@ -1255,8 +1291,14 @@ void load_json() {
     }
 
     if (common) {
-        
-        const char* code_string = jsobject_string(common, "code");
+
+        int code_is_file;
+        const char* code_string = jsobject_first_string(common, code_strings, &code_is_file);
+
+        if (code_is_file) {
+            buf_read_file(&common_buf, code_string, MAX_PROGRAM_LENGTH);
+            code_string = common_buf.data;
+        }
 
         for (int i=0; i<num_renderbuffers; ++i) {
             renderbuffer_t* rb = renderbuffers + i;
@@ -1541,12 +1583,15 @@ void get_options(int argc, char** argv) {
 
         fetch_url(url, &json_buf);
 
-        load_json();
+        const int is_local = 0;
+        load_json(is_local);
         
     } else if (is_json_input) {
         
         buf_read_file(&json_buf, argv[argc-1], MAX_FILE_LENGTH);
-        load_json();
+
+        const int is_local = 1;
+        load_json(is_local);
             
     } else {
 
@@ -1816,6 +1861,8 @@ int main(int argc, char** argv) {
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    buf_free(&common_buf);
+    
     buf_free(&json_buf);
 
     for (int j=0; j<num_renderbuffers; ++j) {
