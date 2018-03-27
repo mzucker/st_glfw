@@ -618,7 +618,7 @@ void setup_framebuffer(renderbuffer_t* rb) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
                      framebuffer_size[0], framebuffer_size[1], 0,
                      GL_RGBA, GL_FLOAT, 0);
             
@@ -885,7 +885,7 @@ void render(GLFWwindow* window) {
             GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
             
             require(status == GL_FRAMEBUFFER_COMPLETE);
-            
+
         }
 
         for (int i=0; i<NUM_CHANNELS; ++i) {
@@ -1716,6 +1716,7 @@ GLFWwindow* setup_window() {
 
     glfwSetErrorCallback(error_callback);
 
+
 #ifdef __APPLE__    
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -1724,6 +1725,7 @@ GLFWwindow* setup_window() {
 #endif
 
     glfwWindowHint(GLFW_DOUBLEBUFFER, GL_TRUE);
+    
     
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
                                           "Shadertoy GLFW", NULL, NULL);
