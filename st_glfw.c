@@ -192,7 +192,7 @@ typedef struct renderbuffer {
 } renderbuffer_t;
 
 renderbuffer_t renderbuffers[MAX_RENDERBUFFERS];
-int draw_order[4] = { -1, -1, -1, -1 };
+int draw_order[MAX_RENDERBUFFERS];
 
 int num_renderbuffers = 0;
 int num_tex_units = 0;
@@ -894,7 +894,7 @@ void render(GLFWwindow* window) {
     
     for (int j=0; j<num_renderbuffers; ++j) {
 
-        renderbuffer_t* rb = renderbuffers + num_renderbuffers - 1 - j;
+        renderbuffer_t* rb = renderbuffers + draw_order[j];
 
         if (rb->framebuffer_state == FRAMEBUFFER_BADSIZE) {
 
@@ -1355,29 +1355,29 @@ void load_json(int is_local) {
         
     }
 
+    //////////////////////////////////////////////////
+    // assign renderbuffers to channels
+
     for (int j=0; j<num_renderbuffers; ++j) {
-
+        
         renderbuffer_t* rb = renderbuffers + j;
-
+        
         for (int i=0; i<NUM_CHANNELS; ++i) {
-
+            
             channel_t* channel = rb->channels + i;
-
+            
             if (channel->ctype == CTYPE_BUFFER) {
                 
                 int found = 0;
-
+                
                 for (int k=0; k<num_renderbuffers; ++k) {
-
+                    
                     if (output_ids[k] == channel->src_rb_idx) {
-
+                        
                         dprintf("  channel %d of input %s is %s\n",
                                 i, rb->name, renderbuffers[k].name);
-                        
                         channel->src_rb_idx = k;
-                        
                         found = 1;
-
                         break;
                         
                     }
@@ -1391,6 +1391,66 @@ void load_json(int is_local) {
                 
             }
         }
+    }
+    
+    //////////////////////////////////////////////////
+    // decide draw order
+
+    int assigned[MAX_RENDERBUFFERS];
+    memset(assigned, 0, sizeof(assigned));
+
+    const char* buf_names[MAX_RENDERBUFFERS] = {
+        "Buf A", "Buf B", "Buf C", 0,
+    };
+    int cur_name_idx = 0;
+
+    // for each position in draw order
+    for (int k=0; k<num_renderbuffers; ++k) {
+
+        const char* cur_name = buf_names[cur_name_idx];
+
+        int next = -1;
+        int name_match = 0;
+
+        // for each renderbuffer
+        for (int j=0; j<num_renderbuffers; ++j) {
+            
+            if (assigned[j]) { continue; }
+            
+            const renderbuffer_t* rb = renderbuffers + j;
+                
+            if (cur_name && !strcasecmp(rb->name, cur_name)) {
+                name_match = 1;
+                next = j;
+                ++cur_name_idx;
+                break; 
+            } else if (j != image_index &&
+                       (next == -1 || output_ids[j] < output_ids[next])) {
+                next = j;
+            }
+            
+        }
+        
+        const char* reason;
+        if (name_match) {
+            reason = "of name match";
+        } else if (next >= 0) {
+            reason = "of priority";
+        } else {
+            reason = "image goes last";
+        }
+
+        if (next < 0) {
+            require(k == num_renderbuffers-1);
+            next = image_index;
+        }
+            
+        dprintf("ordering %s with id %d at position %d because %s\n",
+                renderbuffers[next].name, output_ids[next], k, reason);
+                    
+        draw_order[k] = next;
+        assigned[next] = 1;
+        
     }
 
     dprintf("\n");
