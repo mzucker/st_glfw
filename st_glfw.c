@@ -608,6 +608,7 @@ void clear_framebuffer(renderbuffer_t* rb) {
 void setup_framebuffer(renderbuffer_t* rb) {
 
     glGenTextures(2, rb->draw_textures);
+    glActiveTexture(GL_TEXTURE0);
         
     for (int i=0; i<2; ++i) {
 
@@ -829,7 +830,8 @@ void render(GLFWwindow* window) {
             rb->framebuffer_state == FRAMEBUFFER_BADSIZE) {
 
             GLint w, h;
-            
+
+            glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, rb->draw_textures[rb->last_drawn]);
             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
@@ -1187,6 +1189,8 @@ void load_json() {
     int image_index = -1;
     json_t* common = NULL;
 
+    dprintf("renderpass has length %d\n", len);
+
     for (int i=0; i<len; ++i) {
 
         json_t* renderstep = jsarray(renderpass, i, JSON_OBJECT);
@@ -1196,7 +1200,7 @@ void load_json() {
         if (!strcmp(type, "common")) {
             
             common = renderstep;
-            break;
+            continue;
             
         } else if (!strcmp(type, "image")) {
             
@@ -1221,7 +1225,7 @@ void load_json() {
 
         rb->name = jsobject_string(renderstep, "name");
         rb->output_id = -1;
-        
+
         if (nout) {
             
             if (nout != 1) {
@@ -1236,6 +1240,8 @@ void load_json() {
 
         }
 
+        dprintf("%s has id %d\n", rb->name, rb->output_id);
+        
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
 
         load_inputs(rb, inputs);
@@ -1249,12 +1255,15 @@ void load_json() {
         ++num_renderbuffers;
         
     }
-        
+
     
     if (image_index < 0) {
         fprintf(stderr, "no image render stage in JSON!\n");
         exit(1);
     }
+
+    dprintf("got %d renderbuffers total\n", num_renderbuffers);
+    
     
     if (common) {
         
@@ -1291,13 +1300,15 @@ void load_json() {
                         channel->src_rb_idx = k;
                         
                         found = 1;
+
+                        break;
                         
                     }
                 }
 
                 if (!found) {
-                    fprintf(stderr, "source not found for %s channel %d\n",
-                            rb->name, i);
+                    fprintf(stderr, "source not found for %s channel %d with id %d\n",
+                            rb->name, i, channel->src_rb_idx);
                     exit(1);
                 }
                 
