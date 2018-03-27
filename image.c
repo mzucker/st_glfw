@@ -189,7 +189,7 @@ void read_jpg(const buffer_t* raw,
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
 
-    *pchannels = pixel_size;
+    *pchannels = 3;
     *pwidth = width;
     *pheight = height;
     *psize = size;
