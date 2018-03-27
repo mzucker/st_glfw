@@ -146,13 +146,13 @@ void read_jpg(const buffer_t* raw,
 
     printf("jpeg is %dx%dx%d\n", width, height, pixel_size);
 
-    if (width <= 0 || height <= 0 || pixel_size != 3) {
+    if (width <= 0 || height <= 0 || (pixel_size != 3 && pixel_size != 1)) {
         fprintf(stderr, "incorrect JPG type!\n");
         exit(1);
     }
 
-    int size = width * height * pixel_size;
-    int row_stride = width * pixel_size;
+    int size = width * height * 3;
+    int row_stride = width * 3;
 
     if (row_stride % 4) {
         fprintf(stderr, "warning: bad stride for GL_UNPACK_ALIGNMENT!\n");
@@ -164,14 +164,27 @@ void read_jpg(const buffer_t* raw,
     unsigned char* rowptr = get_rowptr_and_delta(dst, height, row_stride,
                                                  vflip, &row_delta);
 
+    unsigned char* dummy = 0;
+    if (pixel_size == 1) { dummy = malloc(row_stride); }
+
     dst->size += size;
 
     while (cinfo.output_scanline < cinfo.output_height) {
+
+        if (pixel_size == 1) {
+            jpeg_read_scanlines(&cinfo, &dummy, 1);
+            for (int x=0; x<width; ++x) {
+                rowptr[3*x + 0] = rowptr[3*x + 1] = rowptr[3*x + 2] = dummy[x];
+            }
+        } else {
+            jpeg_read_scanlines(&cinfo, &rowptr, 1);
+        }
         
-        jpeg_read_scanlines(&cinfo, &rowptr, 1);
         rowptr += row_delta;
         
     }
+
+    if (dummy) { free(dummy); }
 
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
