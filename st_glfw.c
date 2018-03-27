@@ -786,9 +786,19 @@ void render(GLFWwindow* window) {
 
         glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
 
+        int cur_draw = 0;
+
         if (rb->framebuffer) {
 
+            cur_draw = 1 - rb->last_drawn;
+
             GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                   GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D,
+                                   rb->draw_textures[cur_draw],
+                                   0); 
             
             require(status == GL_FRAMEBUFFER_COMPLETE);
             
@@ -837,6 +847,8 @@ void render(GLFWwindow* window) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
     
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
+
+        rb->last_drawn = cur_draw;
 
         glFinish();
 
