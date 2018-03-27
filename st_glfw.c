@@ -502,8 +502,8 @@ void update_teximage(channel_t* channel) {
         
         src = keymap;
                  
-    } else {
-
+    } else if (channel->ctype != CTYPE_TEXTURE) {
+        
         fprintf(stderr, "should not call update_teximage for this ctype!\n");
         exit(1);
         
