@@ -13,5 +13,5 @@
   - command-line options to specify textures?
   - make sure to provide all uniforms that shadertoy does
   - make sure we fail reasonably on missing shadertoy features
-  
+  - see how hard it would be to use same key codes as website
 
