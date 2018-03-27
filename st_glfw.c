@@ -999,6 +999,8 @@ void render(GLFWwindow* window) {
 
     glfwSwapBuffers(window);
 
+    memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
+
     double frame_end = glfwGetTime();
     u_time_delta = frame_end - frame_start;
     
@@ -1816,21 +1818,21 @@ int js_from_glfw_key(int key) {
     case GLFW_KEY_ENTER: return 13;
     case GLFW_KEY_TAB: return 9;
     case GLFW_KEY_BACKSPACE: return 8;
-    case GLFW_KEY_INSERT: return -1;
-    case GLFW_KEY_DELETE: return 8;
+    case GLFW_KEY_INSERT: return 45;
+    case GLFW_KEY_DELETE: return 46;
     case GLFW_KEY_RIGHT: return 39;
     case GLFW_KEY_LEFT: return 37;
     case GLFW_KEY_DOWN: return 40;
     case GLFW_KEY_UP: return 38;
-    case GLFW_KEY_PAGE_UP: return -1;
-    case GLFW_KEY_PAGE_DOWN: return -1;
-    case GLFW_KEY_HOME: return -1;
-    case GLFW_KEY_END: return -1;
+    case GLFW_KEY_PAGE_UP: return 33;
+    case GLFW_KEY_PAGE_DOWN: return 34;
+    case GLFW_KEY_HOME: return 36;
+    case GLFW_KEY_END: return 35;
     case GLFW_KEY_CAPS_LOCK: return 20;
-    case GLFW_KEY_SCROLL_LOCK: return -1;
-    case GLFW_KEY_NUM_LOCK: return -1;
-    case GLFW_KEY_PRINT_SCREEN: return -1;
-    case GLFW_KEY_PAUSE: return -1;
+    case GLFW_KEY_SCROLL_LOCK: return 145;
+    case GLFW_KEY_NUM_LOCK: return 144;
+    case GLFW_KEY_PRINT_SCREEN: return 44;
+    case GLFW_KEY_PAUSE: return 19;
     case GLFW_KEY_F1: return 112;
     case GLFW_KEY_F2: return 113;
     case GLFW_KEY_F3: return 114;
@@ -1843,36 +1845,36 @@ int js_from_glfw_key(int key) {
     case GLFW_KEY_F10: return 121;
     case GLFW_KEY_F11: return 122;
     case GLFW_KEY_F12: return 123;
-    case GLFW_KEY_F13: return -1;
-    case GLFW_KEY_F14: return -1;
-    case GLFW_KEY_F15: return -1;
-    case GLFW_KEY_F16: return -1;
-    case GLFW_KEY_F17: return -1;
-    case GLFW_KEY_F18: return -1;
-    case GLFW_KEY_F19: return -1;
-    case GLFW_KEY_F20: return -1;
-    case GLFW_KEY_F21: return -1;
-    case GLFW_KEY_F22: return -1;
-    case GLFW_KEY_F23: return -1;
-    case GLFW_KEY_F24: return -1;
-    case GLFW_KEY_F25: return -1;
-    case GLFW_KEY_KP_0: return -1;
-    case GLFW_KEY_KP_1: return -1;
-    case GLFW_KEY_KP_2: return -1;
-    case GLFW_KEY_KP_3: return -1;
-    case GLFW_KEY_KP_4: return -1;
-    case GLFW_KEY_KP_5: return -1;
-    case GLFW_KEY_KP_6: return -1;
-    case GLFW_KEY_KP_7: return -1;
-    case GLFW_KEY_KP_8: return -1;
-    case GLFW_KEY_KP_9: return -1;
-    case GLFW_KEY_KP_DECIMAL: return -1;
-    case GLFW_KEY_KP_DIVIDE: return -1;
-    case GLFW_KEY_KP_MULTIPLY: return -1;
-    case GLFW_KEY_KP_SUBTRACT: return -1;
-    case GLFW_KEY_KP_ADD: return -1;
-    case GLFW_KEY_KP_ENTER: return -1;
-    case GLFW_KEY_KP_EQUAL: return -1;
+    case GLFW_KEY_F13: return 124;
+    case GLFW_KEY_F14: return 125;
+    case GLFW_KEY_F15: return 126;
+    case GLFW_KEY_F16: return 127;
+    case GLFW_KEY_F17: return 128;
+    case GLFW_KEY_F18: return 129;
+    case GLFW_KEY_F19: return 130;
+    case GLFW_KEY_F20: return 131;
+    case GLFW_KEY_F21: return 132;
+    case GLFW_KEY_F22: return 133;
+    case GLFW_KEY_F23: return 134;
+    case GLFW_KEY_F24: return 135;
+    case GLFW_KEY_F25: return 136;
+    case GLFW_KEY_KP_0: return 96;
+    case GLFW_KEY_KP_1: return 97;
+    case GLFW_KEY_KP_2: return 98;
+    case GLFW_KEY_KP_3: return 99;
+    case GLFW_KEY_KP_4: return 100;
+    case GLFW_KEY_KP_5: return 101;
+    case GLFW_KEY_KP_6: return 102;
+    case GLFW_KEY_KP_7: return 103;
+    case GLFW_KEY_KP_8: return 104;
+    case GLFW_KEY_KP_9: return 105;
+    case GLFW_KEY_KP_DECIMAL: return 110;
+    case GLFW_KEY_KP_DIVIDE: return 111;
+    case GLFW_KEY_KP_MULTIPLY: return 106;
+    case GLFW_KEY_KP_SUBTRACT: return 109;
+    case GLFW_KEY_KP_ADD: return 107;
+    case GLFW_KEY_KP_ENTER: return 13;
+    case GLFW_KEY_KP_EQUAL: return 187;
     case GLFW_KEY_LEFT_SHIFT: return 16;
     case GLFW_KEY_LEFT_CONTROL: return 17;
     case GLFW_KEY_LEFT_ALT: return 18;
@@ -1881,7 +1883,7 @@ int js_from_glfw_key(int key) {
     case GLFW_KEY_RIGHT_CONTROL: return 17;
     case GLFW_KEY_RIGHT_ALT: return 18;
     case GLFW_KEY_RIGHT_SUPER: return 91;
-    case GLFW_KEY_MENU: return -1;
+    case GLFW_KEY_MENU: return 93;
     default: return -1;
     }
     
@@ -1916,42 +1918,48 @@ void key_callback(GLFWwindow* window, int key,
             } else {
                 printf("paused at %f\n", u_time);
             }
-                
             
         } else if (toupper(key) == 'S' && (mods & GLFW_MOD_ALT)) {
 
             printf("saving a screenshot!\n");
             single_shot = 1;
+            need_render = 1;
 
         } else if (jskey >= 0 && jskey < 256) {
 
-            printf("press %d\n", jskey);
-
             for (int c=0; c<3; ++c) {
                 key_press[3*jskey+c] = 255;
-                if (last_key != jskey) {
-                    key_press[3*last_key+c] = 0;
-                }
                 key_toggle[3*jskey+c] = ~key_toggle[3*jskey+c];
                 key_state[3*jskey+c] = 255;
             }
 
             last_key = jskey;
+            need_render = 1;
 
         }
         
     } else if (action == GLFW_RELEASE && jskey >= 0 && jskey < 256) {
-        
-        printf("release %d\n", jskey);
         
         for (int c=0; c<3; ++c) {
             key_state[3*jskey+c] = 0;
             key_press[3*jskey+c] = 0;
         }
 
+        need_render = 1;
+
+    } else if (action == GLFW_REPEAT && jskey >= 0 && jskey < 256) {
+
+        int was_pressed = key_state[3*jskey];
+        
+        for (int c=0; c<3; ++c) {
+            key_state[3*jskey+c] = was_pressed ? 0 : 255;
+            key_press[3*jskey+c] = was_pressed ? 0 : 255;
+        }
+
+        need_render = 1;
+
     }
 
-    need_render = 1;
     
 }
 
