@@ -201,9 +201,9 @@ GLubyte keymap[KEYMAP_TOTAL_BYTES];
 
 int last_key = -1;
 
-GLubyte* key_state = keymap + 1*KEYMAP_BYTES_PER_ROW;
+GLubyte* key_state = keymap + 0*KEYMAP_BYTES_PER_ROW;
 GLubyte* key_toggle = keymap + 2*KEYMAP_BYTES_PER_ROW;
-GLubyte* key_press = keymap + 0*KEYMAP_BYTES_PER_ROW;
+GLubyte* key_press = keymap + 1*KEYMAP_BYTES_PER_ROW;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1825,6 +1825,8 @@ void key_callback(GLFWwindow* window, int key,
 
         } else if (key >= 0 && key < 256) {
 
+            printf("press %d\n", key);
+
             for (int c=0; c<3; ++c) {
                 key_press[3*key+c] = 255;
                 if (last_key != key) {
@@ -1839,7 +1841,9 @@ void key_callback(GLFWwindow* window, int key,
         }
         
     } else if (action == GLFW_RELEASE && key >= 0 && key < 256) {
-
+        
+        printf("release %d\n", key);
+        
         for (int c=0; c<3; ++c) {
             key_state[3*key+c] = 0;
             key_press[3*key+c] = 0;
