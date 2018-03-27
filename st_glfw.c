@@ -1372,6 +1372,8 @@ void get_options(int argc, char** argv) {
     int force_files = 0;
 
     int key_cidx = -1;
+
+    int any_json = 0;
     
     for (int i=1; i<input_start; ++i) {
 
@@ -1481,6 +1483,11 @@ void get_options(int argc, char** argv) {
                 argv[j] = argv[j+1];
             }
 
+            const char* extension = get_extension(tmp);
+            if (!strcasecmp(extension, "js") || !strcasecmp(extension, "json")) {
+                any_json = 1;
+            }
+
             argv[argc-1] = tmp;
             input_start -=1;
             i -= 1;
@@ -1498,12 +1505,17 @@ void get_options(int argc, char** argv) {
         printf("will record for %d frames\n", record_frames);
     }
 
-    const char* last_filename = argv[argc-1];
-    const char* last_extension = get_extension(last_filename);
+    int is_json_input = 0;
 
-    int is_json_input = (input_start == argc-1 &&
-                         (!strcasecmp(last_extension, "js") ||
-                          !strcasecmp(last_extension, "json")));
+    if (any_json) {
+        if (input_start == argc-1) {
+            is_json_input = 1;
+        } else {
+            fprintf(stderr, "if JSON input is provided, "
+                    "it must be the only input!\n");
+            exit(1);
+        }
+    }
 
     if ((is_json_input || shadertoy_id) && key_cidx >= 0) {
         fprintf(stderr, "warning: ignoring -keyboard because reading JSON\n");
@@ -1512,7 +1524,7 @@ void get_options(int argc, char** argv) {
     if (shadertoy_id) {
 
         if (input_start != argc) {
-            fprintf(stderr, "error: can't specify shadertoy ID and GLSL source!\n");
+            fprintf(stderr, "error: can't specify shadertoy ID and other sources!\n");
             exit(1);
         }
 
@@ -1533,7 +1545,7 @@ void get_options(int argc, char** argv) {
         
     } else if (is_json_input) {
         
-        buf_read_file(&json_buf, last_filename, MAX_FILE_LENGTH);
+        buf_read_file(&json_buf, argv[argc-1], MAX_FILE_LENGTH);
         load_json();
             
     } else {
@@ -1549,17 +1561,6 @@ void get_options(int argc, char** argv) {
         for (int i=input_start; i<argc; ++i) {
                 
             const char* filename = argv[i];
-            const char* extension = get_extension(filename);
-            
-            if (!strcasecmp(extension, "js") ||
-                !strcasecmp(extension, "json")) {
-                    
-                fprintf(stderr, "error: can't specify more than "
-                        "one JSON input!\n");
-                    
-                exit(1);
-                    
-            }
                 
             new_shader_source(rb);
             buf_read_file(&rb->shader_buf, filename, MAX_FILE_LENGTH);
