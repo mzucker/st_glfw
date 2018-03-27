@@ -677,7 +677,42 @@ void reset() {
     u_frame = 0;
     u_mouse[0] = u_mouse[1] = u_mouse[2] = u_mouse[3] = -1;
 
-    memset(keymap, 0, KEYMAP_TOTAL_BYTES); 
+    memset(keymap, 0, KEYMAP_TOTAL_BYTES);
+
+    for (int j=0; j<num_renderbuffers; ++j) {
+        
+        renderbuffer_t* rb = renderbuffers + j;
+
+        if (rb->framebuffer) {
+
+            glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
+            
+            for (int i=0; i<2; ++i) {
+                
+                glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                       GL_COLOR_ATTACHMENT0,
+                                       GL_TEXTURE_2D,
+                                       rb->draw_textures[i],
+                                       0);
+
+                GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+                
+                require(status == GL_FRAMEBUFFER_COMPLETE);
+
+                const GLfloat zero[4] = { 0, 0, 0, 0 };
+
+                glClearBufferfv(GL_COLOR, 0, zero);
+
+                check_opengl_errors("after clear");
+                
+            }
+            
+        }
+        
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
 
     need_render = 1;
 
@@ -792,13 +827,13 @@ void render(GLFWwindow* window) {
 
             cur_draw = 1 - rb->last_drawn;
 
-            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-
             glFramebufferTexture2D(GL_FRAMEBUFFER,
                                    GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_2D,
                                    rb->draw_textures[cur_draw],
-                                   0); 
+                                   0);
+
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
             
             require(status == GL_FRAMEBUFFER_COMPLETE);
             
@@ -817,8 +852,10 @@ void render(GLFWwindow* window) {
 
                 renderbuffer_t* src_rb = renderbuffers + channel->src_rb_idx;
 
+                GLuint src_tex = src_rb->draw_textures[src_rb->last_drawn];
+
                 glActiveTexture(GL_TEXTURE0 + i);
-                glBindTexture(GL_TEXTURE_2D, src_rb->draw_textures[0]);
+                glBindTexture(GL_TEXTURE_2D, src_tex);
                 texture_parameters(channel);
 
                 if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
@@ -875,7 +912,7 @@ void render(GLFWwindow* window) {
     
     last_frame_start = frame_start;
     need_render = 0;
-    
+
 }
 
 
