@@ -11,5 +11,7 @@
   - unwrapper script to split JSON into constutient parts
   - figure out way to replace code with code_src to point into filesystem for JSON
   - command-line options to specify textures?
+  - make sure to provide all uniforms that shadertoy does
+  - make sure we fail reasonably on missing shadertoy features
   
 
