@@ -502,12 +502,10 @@ void update_teximage(channel_t* channel) {
         
         src = keymap;
                  
-    } else if (channel->ctype == CTYPE_BUFFER) {
+    } else {
 
-        dprintf("skipping update_teximage for buffer!\n");
-        channel->dirty = 0;
-        channel->initialized = 1;
-        return;
+        fprintf(stderr, "should not call update_teximage for this ctype!\n");
+        exit(1);
         
     }
 
@@ -654,11 +652,7 @@ void setup_textures(renderbuffer_t* rb) {
 
     if (rb->output_id >= 0) {
         
-        dprintf("todo: setup framebuffer for %s to size %dx%d\n",
-                rb->name, framebuffer_size[0], framebuffer_size[1]);
-
         setup_framebuffer(rb);
-        
         
     }
 
@@ -1240,8 +1234,6 @@ void load_json() {
 
         }
 
-        dprintf("%s has id %d\n", rb->name, rb->output_id);
-        
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
 
         load_inputs(rb, inputs);
@@ -1262,9 +1254,6 @@ void load_json() {
         exit(1);
     }
 
-    dprintf("got %d renderbuffers total\n", num_renderbuffers);
-    
-    
     if (common) {
         
         const char* code_string = jsobject_string(common, "code");
@@ -1294,9 +1283,6 @@ void load_json() {
                     
                     if (other_rb->output_id == channel->src_rb_idx) {
                         
-                        dprintf("%s channel %d uses %s as input\n",
-                                rb->name, i, other_rb->name);
-
                         channel->src_rb_idx = k;
                         
                         found = 1;
@@ -1535,25 +1521,38 @@ void get_options(int argc, char** argv) {
         load_json();
         
     } else {
-        
-        for (int i=input_start; i<argc; ++i) {
 
-            const char* filename = argv[i];
-            const char* extension = get_extension(filename);
+        const char* last_filename = argv[argc-1];
+        const char* last_extension = get_extension(last_filename);
+
+        if (input_start == argc-1 &&
+            (!strcasecmp(last_extension, "js") ||
+             !strcasecmp(last_extension, "json"))) {
             
-            if (!strcasecmp(extension, "js") || !strcasecmp(extension, "json")) {
+            buf_read_file(&json_buf, last_filename, MAX_FILE_LENGTH);
+            load_json();
+            
+        } else {
+
+            num_renderbuffers = 1;
+            renderbuffers[0].name = "Image";
+            renderbuffers[0].output_id = -1;
+            
+            for (int i=input_start; i<argc; ++i) {
                 
-                if (input_start != argc - 1) {
+                const char* filename = argv[i];
+                const char* extension = get_extension(filename);
+            
+                if (!strcasecmp(extension, "js") ||
+                    !strcasecmp(extension, "json")) {
+                    
                     fprintf(stderr, "error: can't specify more than "
                             "one JSON input!\n");
+                    
                     exit(1);
+                    
                 }
                 
-                buf_read_file(&json_buf, filename, MAX_FILE_LENGTH);
-                load_json();
-                
-            } else {
-
                 require( num_renderbuffers == 1 );
                 renderbuffer_t* rb = renderbuffers + 0;
                 
@@ -1562,7 +1561,9 @@ void get_options(int argc, char** argv) {
                 rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
                 
             }
+            
         }
+
         
     }
 
