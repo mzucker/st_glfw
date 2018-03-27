@@ -131,9 +131,10 @@ typedef struct channel {
 
     GLuint target;
     GLuint tex_id;
+    GLuint uniform_sampler;
 
-    int src_id;
-    
+    int src_rb_idx;
+
     int filter;
     int srgb;
     int vflip;
@@ -146,6 +147,12 @@ typedef struct channel {
     int initialized;
     
 } channel_t;
+
+enum {
+    FRAMEBUFFER_UNINITIALIZED = 0,
+    FRAMEBUFFER_OK = 1,
+    FRAMEBUFFER_BADSIZE = 2,
+};
 
 typedef struct renderbuffer {
 
@@ -165,7 +172,13 @@ typedef struct renderbuffer {
     GLuint element_buffer;
     
     GLuint vao;
+
+    GLuint framebuffer; 
+    int framebuffer_state;
     
+    GLuint draw_textures[2];
+    int last_drawn;
+
     GLuint uniform_handles[MAX_UNIFORMS];
     
 } renderbuffer_t;
@@ -541,7 +554,86 @@ void update_teximage(channel_t* channel) {
 
 //////////////////////////////////////////////////////////////////////
 
+void texture_parameters(const channel_t* channel) {
+
+    int mag = channel->filter;
+    if (mag == GL_LINEAR_MIPMAP_LINEAR) {
+        mag = GL_LINEAR;
+    }
+        
+    glTexParameteri(channel->target,
+                    GL_TEXTURE_MAG_FILTER,
+                    mag);
+
+    glTexParameteri(channel->target,
+                    GL_TEXTURE_MIN_FILTER,
+                    channel->filter);
+
+    glTexParameteri(channel->target,
+                    GL_TEXTURE_WRAP_S,
+                    channel->wrap);
+
+    glTexParameteri(channel->target,
+                    GL_TEXTURE_WRAP_T,
+                    channel->wrap);
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void setup_textures(renderbuffer_t* rb) {
+
+    if (rb->output_id >= 0) {
+        
+        dprintf("todo: setup framebuffer for %s to size %dx%d\n",
+                rb->name, framebuffer_size[0], framebuffer_size[1]);
+
+
+        glGenTextures(2, rb->draw_textures);
+        
+        for (int i=0; i<2; ++i) {
+
+            rb->last_drawn = i;
+
+            glBindTexture(GL_TEXTURE_2D, rb->draw_textures[i]);
+            
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                         framebuffer_size[0], framebuffer_size[1], 0,
+                         GL_RGBA, GL_FLOAT, 0);
+            
+            glBindTexture(GL_TEXTURE_2D, 0);
+            
+            
+        }
+
+        glGenFramebuffers(1, &rb->framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
+
+        glFramebufferTexture2D(GL_FRAMEBUFFER,
+                               GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D,
+                               rb->draw_textures[0],
+                               0);
+
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+        require(status == GL_FRAMEBUFFER_COMPLETE);
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        rb->framebuffer_state = FRAMEBUFFER_OK;
+
+        check_opengl_errors("setup_textures framebuffer");
+        
+    }
 
     for (int i=0; i<4; ++i) {
 
@@ -549,37 +641,22 @@ void setup_textures(renderbuffer_t* rb) {
 
         if (channel->ctype) {
 
-            GLuint channel_loc = glGetUniformLocation(rb->program,
-                                                      channel->name);
-            
+            channel->uniform_sampler = glGetUniformLocation(rb->program,
+                                                            channel->name);
+
             glActiveTexture(GL_TEXTURE0 + i);
-            glUniform1i(channel_loc, i);
-
-            glGenTextures(1, &channel->tex_id);
-            glBindTexture(GL_TEXTURE_2D, channel->tex_id);
+            glUniform1i(channel->uniform_sampler, i);
             
-            int mag = channel->filter;
-            if (mag == GL_LINEAR_MIPMAP_LINEAR) {
-                mag = GL_LINEAR;
+            if (channel->ctype != CTYPE_BUFFER) {
+
+                glGenTextures(1, &channel->tex_id);
+                glBindTexture(GL_TEXTURE_2D, channel->tex_id);
+
+                texture_parameters(channel);
+                
+                update_teximage(channel);
+
             }
-        
-            glTexParameteri(channel->target,
-                            GL_TEXTURE_MAG_FILTER,
-                            mag);
-
-            glTexParameteri(channel->target,
-                            GL_TEXTURE_MIN_FILTER,
-                            channel->filter);
-
-            glTexParameteri(channel->target,
-                            GL_TEXTURE_WRAP_S,
-                            channel->wrap);
-
-            glTexParameteri(channel->target,
-                            GL_TEXTURE_WRAP_T,
-                            channel->wrap);
-
-            update_teximage(channel);
 
             check_opengl_errors("after dealing with channel");
 
@@ -608,29 +685,22 @@ void reset() {
 
 //////////////////////////////////////////////////////////////////////
 
-void set_uniforms() {
+void set_uniforms(renderbuffer_t* rb) {
 
-    for (int j=0; j<num_renderbuffers; ++j) {
-
-        renderbuffer_t* rb = renderbuffers + j;
-        glUseProgram(rb->program);
-
-        for (size_t i=0; i<num_uniforms; ++i) {
-            const uniform_t* u = uinfo + i;
-            switch (u->ptr_type) {
-            case GL_FLOAT:
-                u->float_func(rb->uniform_handles[i], 1, (const GLfloat*)u->src);
-                break;
-            case GL_INT:
-                u->int_func(rb->uniform_handles[i], 1, (const GLint*)u->src);
-                break;
-            default:
-                fprintf(stderr, "invalid pointer type in set_uniforms!\n");
-                exit(1);
-            }
-            check_opengl_errors(u->name);
+    for (size_t i=0; i<num_uniforms; ++i) {
+        const uniform_t* u = uinfo + i;
+        switch (u->ptr_type) {
+        case GL_FLOAT:
+            u->float_func(rb->uniform_handles[i], 1, (const GLfloat*)u->src);
+            break;
+        case GL_INT:
+            u->int_func(rb->uniform_handles[i], 1, (const GLint*)u->src);
+            break;
+        default:
+            fprintf(stderr, "invalid pointer type in set_uniforms!\n");
+            exit(1);
         }
-
+        check_opengl_errors(u->name);
     }
     
 }
@@ -679,14 +749,7 @@ void screenshot() {
 
 //////////////////////////////////////////////////////////////////////
 
-void render(GLFWwindow* window) {
-
-    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
-
-    for (int i=0; i<2; ++i) {
-        float denom = window_size[i] ? window_size[i] : 1;
-        pixel_scale[i] = framebuffer_size[i] / denom;
-    }
+void render(GLFWwindow* window) {   
 
     double frame_start = glfwGetTime();
 
@@ -714,12 +777,22 @@ void render(GLFWwindow* window) {
 
     check_opengl_errors("before set uniforms");
     
-    set_uniforms();
-    check_opengl_errors("after set uniforms");
-
     for (int j=0; j<num_renderbuffers; ++j) {
 
-        renderbuffer_t* rb = renderbuffers + j;
+        renderbuffer_t* rb = renderbuffers + num_renderbuffers - 1 - j;
+
+        require(rb->framebuffer == 0 ||
+                rb->framebuffer_state == FRAMEBUFFER_OK);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffer);
+
+        if (rb->framebuffer) {
+
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            
+            require(status == GL_FRAMEBUFFER_COMPLETE);
+            
+        }
 
         for (int i=0; i<NUM_CHANNELS; ++i) {
 
@@ -727,36 +800,54 @@ void render(GLFWwindow* window) {
 
             if (channel->ctype == CTYPE_NONE) { continue; }
 
-            if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
+            if (channel->ctype == CTYPE_BUFFER) {
 
+                require(channel->src_rb_idx >= 0 &&
+                        channel->src_rb_idx < num_renderbuffers);
+
+                renderbuffer_t* src_rb = renderbuffers + channel->src_rb_idx;
+
+                glActiveTexture(GL_TEXTURE0 + i);
+                glBindTexture(GL_TEXTURE_2D, src_rb->draw_textures[0]);
+                texture_parameters(channel);
+
+                if (channel->filter == GL_LINEAR_MIPMAP_LINEAR) {
+                    glGenerateMipmap(GL_TEXTURE_2D);
+                }
+
+            } else if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
+
+                glActiveTexture(GL_TEXTURE0 + i);
                 glBindTexture(channel->target, channel->tex_id);
-
                 update_teximage(channel);
 
             }
         
         }
 
+        glUseProgram(rb->program);
+        set_uniforms(rb);
+        check_opengl_errors("after set uniforms");
+
+        glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glBindVertexArray(rb->vao);
+        glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
+    
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
+
+        glFinish();
+
+        check_opengl_errors("after rendering step");
+
     }
-
-    glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    require( num_renderbuffers == 1 );
-    renderbuffer_t* rb = renderbuffers + 0;
-
-    glBindVertexArray(rb->vao);
-    glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rb->element_buffer);
-    
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, (void*)0);
-    
-    check_opengl_errors("after render");
 
     if (recording || single_shot) {
         screenshot();
     }
-    
+
     glfwSwapBuffers(window);
 
     double frame_end = glfwGetTime();
@@ -910,7 +1001,7 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
         channel->wrap = lookup_enum(wrap_enums,
                                     jsobject_string(sampler, "wrap"));
 
-        channel->src_id = -1;
+        channel->src_rb_idx = -1;
 
         const char* ctype = jsobject_string(input_i, "ctype");
 
@@ -971,8 +1062,7 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs) {
 
             channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_BUFFER;
-            channel->src_id = jsobject_integer(input_i, "id");
-            printf("temporarily ignoring buffer input!\n");
+            channel->src_rb_idx = jsobject_integer(input_i, "id");
             
         } else {
             
@@ -1027,26 +1117,24 @@ void load_json() {
         }
 
         renderbuffer_t* rb = renderbuffers + num_renderbuffers;
-        ++num_renderbuffers;
 
         json_t* outputs = jsobject(renderstep, "outputs", JSON_ARRAY);
         int nout = json_array_size(outputs);
 
         rb->name = jsobject_string(renderstep, "name");
+        rb->output_id = -1;
         
-        if (!nout) {
-            
-            rb->output_id = -1;
-            
-        } else {
+        if (nout) {
             
             if (nout != 1) {
                 fprintf(stderr, "expected render pass to have 0 or 1 outputs!\n");
                 exit(1);
             }
-            
-            json_t* output = jsarray(outputs, 0, JSON_OBJECT);
-            rb->output_id = jsobject_integer(output, "id");
+
+            if (num_renderbuffers != image_index) {
+                json_t* output = jsarray(outputs, 0, JSON_OBJECT);
+                rb->output_id = jsobject_integer(output, "id");
+            }
 
         }
 
@@ -1060,7 +1148,10 @@ void load_json() {
         buf_append(&rb->shader_buf, code_string, strlen(code_string));
         rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
 
+        ++num_renderbuffers;
+        
     }
+        
     
     if (image_index < 0) {
         fprintf(stderr, "no image render stage in JSON!\n");
@@ -1076,6 +1167,44 @@ void load_json() {
             rb->fragment_src[FRAG_SRC_COMMON_SLOT] = code_string;
         }
         
+    }
+
+    for (int j=0; j<num_renderbuffers; ++j) {
+
+        renderbuffer_t* rb = renderbuffers + j;
+
+        for (int i=0; i<4; ++i) {
+
+            channel_t* channel = rb->channels + i;
+
+            if (channel->ctype == CTYPE_BUFFER) {
+                
+                int found = 0;
+
+                for (int k=0; k<num_renderbuffers; ++k) {
+
+                    renderbuffer_t* other_rb = renderbuffers + k;
+                    
+                    if (other_rb->output_id == channel->src_rb_idx) {
+                        
+                        dprintf("%s channel %d uses %s as input\n",
+                                rb->name, i, other_rb->name);
+
+                        channel->src_rb_idx = k;
+                        
+                        found = 1;
+                        
+                    }
+                }
+
+                if (!found) {
+                    fprintf(stderr, "source not found for %s channel %d\n",
+                            rb->name, i);
+                    exit(1);
+                }
+                
+            }
+        }
     }
 
     
@@ -1458,6 +1587,22 @@ void window_size_callback(GLFWwindow* window,
     window_size[0] = w;
     window_size[1] = h;
 
+    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
+
+    for (int i=0; i<2; ++i) {
+        float denom = window_size[i] ? window_size[i] : 1;
+        pixel_scale[i] = framebuffer_size[i] / denom;
+    }
+    
+    for (int j=0; j<num_renderbuffers; ++j) {
+        renderbuffer_t* rb = renderbuffers + j;
+        if (rb->framebuffer != 0) {
+            if (rb->framebuffer_state) {
+                rb->framebuffer_state = FRAMEBUFFER_BADSIZE;
+            }
+        }
+    }
+
     render(window);
     
 }
@@ -1491,6 +1636,13 @@ GLFWwindow* setup_window() {
 
     glfwGetWindowSize(window, window_size+0, window_size+1);
 
+    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
+
+    for (int i=0; i<2; ++i) {
+        float denom = window_size[i] ? window_size[i] : 1;
+        pixel_scale[i] = framebuffer_size[i] / denom;
+    }
+    
     glfwSetKeyCallback(window, key_callback);
     glfwSetCursorPosCallback(window, cursor_pos_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
