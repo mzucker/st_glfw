@@ -264,6 +264,14 @@ void read_png(const buffer_t* raw,
 
     printf("PNG is %dx%dx%d, color type %s\n",
            width, height, channels, color_type_str);
+
+    if (color_type == PNG_COLOR_TYPE_GRAY ) {
+        channels = 3;
+        png_set_gray_to_rgb(png_ptr);
+    } else if (color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
+        channels = 4;
+        png_set_gray_to_rgb(png_ptr);
+    }
     
     if (width <= 0 || height <= 0 || bitdepth != 8 || (channels != 3 && channels != 4)) {
         fprintf(stderr, "invalid PNG settings!\n");
