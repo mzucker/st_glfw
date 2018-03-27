@@ -1189,7 +1189,7 @@ void load_json() {
     int image_index = -1;
     json_t* common = NULL;
 
-    dprintf("renderpass has length %d\n", len);
+    dprintf("renderpass has length %d\n", (int)len);
 
     for (int i=0; i<len; ++i) {
 

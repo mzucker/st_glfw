@@ -260,6 +260,7 @@ void read_png(const buffer_t* raw,
         HANDLE(PNG_COLOR_TYPE_GRAY_ALPHA);
         HANDLE(PNG_COLOR_TYPE_RGB);
         HANDLE(PNG_COLOR_TYPE_RGB_ALPHA);
+        HANDLE(PNG_COLOR_TYPE_PALETTE);
     }
 
     printf("PNG is %dx%dx%d, color type %s\n",
