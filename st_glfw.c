@@ -1315,6 +1315,7 @@ void dieusage() {
             "OPTIONS:\n"
             "  -id        SHADERID  Load specified shader from Shadertoy.com\n"
             "  -apikey    KEY       Set Shadertoy.com API key (needed to load shaders)\n"
+            "  -keyboard  CHANNEL   Set up keyboard input channel (raw GLSL only)\n"
             "  -geometry  WxH       Initialize window with width W and height H\n"
             "  -speedup   FACTOR    Speed up by this factor\n"
             "  -frames    COUNT     Record COUNT frames to PNG\n"
@@ -1369,6 +1370,8 @@ void get_options(int argc, char** argv) {
 
     int input_start = argc;
     int force_files = 0;
+
+    int key_cidx = -1;
     
     for (int i=1; i<input_start; ++i) {
 
@@ -1421,15 +1424,12 @@ void get_options(int argc, char** argv) {
             
         } else if (!strcmp(argv[i], "-keyboard")) {
 
-            int key_cidx = getint(argc, argv, i+1);
+            key_cidx = getint(argc, argv, i+1);
             
             if (key_cidx < 0 || key_cidx >= 4) {
                 fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
                 exit(1);
             }
-
-            require(num_renderbuffers == 1);
-            setup_keyboard(renderbuffers + 0, key_cidx);
 
             i += 1;
             
@@ -1498,6 +1498,17 @@ void get_options(int argc, char** argv) {
         printf("will record for %d frames\n", record_frames);
     }
 
+    const char* last_filename = argv[argc-1];
+    const char* last_extension = get_extension(last_filename);
+
+    int is_json_input = (input_start == argc-1 &&
+                         (!strcasecmp(last_extension, "js") ||
+                          !strcasecmp(last_extension, "json")));
+
+    if ((is_json_input || shadertoy_id) && key_cidx >= 0) {
+        fprintf(stderr, "warning: ignoring -keyboard because reading JSON\n");
+    }
+
     if (shadertoy_id) {
 
         if (input_start != argc) {
@@ -1520,52 +1531,44 @@ void get_options(int argc, char** argv) {
 
         load_json();
         
+    } else if (is_json_input) {
+        
+        buf_read_file(&json_buf, last_filename, MAX_FILE_LENGTH);
+        load_json();
+            
     } else {
 
-        const char* last_filename = argv[argc-1];
-        const char* last_extension = get_extension(last_filename);
+        num_renderbuffers = 1;
+        renderbuffers[0].name = "Image";
+        renderbuffers[0].output_id = -1;
 
-        if (input_start == argc-1 &&
-            (!strcasecmp(last_extension, "js") ||
-             !strcasecmp(last_extension, "json"))) {
+        renderbuffer_t* rb = renderbuffers + 0;
             
-            buf_read_file(&json_buf, last_filename, MAX_FILE_LENGTH);
-            load_json();
+        if (key_cidx >= 0) { setup_keyboard(rb, key_cidx); }
             
-        } else {
-
-            num_renderbuffers = 1;
-            renderbuffers[0].name = "Image";
-            renderbuffers[0].output_id = -1;
-            
-            for (int i=input_start; i<argc; ++i) {
+        for (int i=input_start; i<argc; ++i) {
                 
-                const char* filename = argv[i];
-                const char* extension = get_extension(filename);
+            const char* filename = argv[i];
+            const char* extension = get_extension(filename);
             
-                if (!strcasecmp(extension, "js") ||
-                    !strcasecmp(extension, "json")) {
+            if (!strcasecmp(extension, "js") ||
+                !strcasecmp(extension, "json")) {
                     
-                    fprintf(stderr, "error: can't specify more than "
-                            "one JSON input!\n");
+                fprintf(stderr, "error: can't specify more than "
+                        "one JSON input!\n");
                     
-                    exit(1);
+                exit(1);
                     
-                }
-                
-                require( num_renderbuffers == 1 );
-                renderbuffer_t* rb = renderbuffers + 0;
-                
-                new_shader_source(rb);
-                buf_read_file(&rb->shader_buf, filename, MAX_FILE_LENGTH);
-                rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
-                
             }
-            
+                
+            new_shader_source(rb);
+            buf_read_file(&rb->shader_buf, filename, MAX_FILE_LENGTH);
+            rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
+                
         }
-
-        
+            
     }
+
 
 }
 
