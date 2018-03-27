@@ -60,7 +60,7 @@ int num_uniforms = 0;
 //////////////////////////////////////////////////////////////////////
 
 const char* vertex_src[1] = {
-    "#version 150\n"
+    "#version 330\n"
     "in vec2 vertexPosition;\n"
     "void main()\n"
     "{\n"
@@ -83,7 +83,7 @@ enum {
 
 const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
-    "#version 150\n#line 0 0\n",
+    "#version 330\n#line 0 0\n",
     
     "",
     
@@ -1718,7 +1718,7 @@ GLFWwindow* setup_window() {
 
 #ifdef __APPLE__    
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
 #endif
