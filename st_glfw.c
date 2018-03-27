@@ -1223,6 +1223,10 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs, int is_local) {
             channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_BUFFER;
             channel->src_rb_idx = jsobject_integer(input_i, "id");
+
+        } else if (!strcmp(ctype, "musicstream")) {
+
+            fprintf(stderr, "warning: ignoring input type %s\n", ctype);
             
         } else {
             
