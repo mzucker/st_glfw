@@ -265,12 +265,24 @@ void read_png(const buffer_t* raw,
     printf("PNG is %dx%dx%d, color type %s\n",
            width, height, channels, color_type_str);
 
+    if (bitdepth == 16) {
+        png_set_strip_16(png_ptr);
+        bitdepth = 8;
+    }
+    
     if (color_type == PNG_COLOR_TYPE_GRAY ) {
         channels = 3;
         png_set_gray_to_rgb(png_ptr);
     } else if (color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
         channels = 4;
         png_set_gray_to_rgb(png_ptr);
+    } else if (color_type == PNG_COLOR_TYPE_PALETTE) {
+        channels = 3;
+        png_set_palette_to_rgb(png_ptr);
+        if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS)) {
+            channels = 4;
+            png_set_tRNS_to_alpha(png_ptr);
+        }
     }
     
     if (width <= 0 || height <= 0 || bitdepth != 8 || (channels != 3 && channels != 4)) {
