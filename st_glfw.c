@@ -251,6 +251,8 @@ int mouse_down = 0;
 
 //////////////////////////////////////////////////////////////////////
 
+char window_title[BIG_STRING_LENGTH] = "Shadertoy GLFW";
+
 const char* shadertoy_id = NULL;
 const char* api_key = NULL;
 
@@ -1248,6 +1250,15 @@ void load_json(int is_local) {
     json_root = jsparse(&json_buf);
 
     json_t* shader = jsobject(json_root, "Shader", JSON_OBJECT);
+
+    json_t* info = json_object_get(shader, "info");
+    if (info && json_typeof(info) == JSON_OBJECT) {
+        const char* name = jsobject_string(info, "name");
+        const char* author = jsobject_string(info, "username");
+        snprintf(window_title, BIG_STRING_LENGTH, "\"%s\" by %s",
+                 name, author);
+    }
+    
     json_t* renderpass = jsobject(shader, "renderpass", JSON_ARRAY);
 
     size_t len = json_array_size(renderpass);
@@ -2025,7 +2036,7 @@ GLFWwindow* setup_window() {
     
     
     GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
-                                          "Shadertoy GLFW", NULL, NULL);
+                                          window_title, NULL, NULL);
     if (!window) {
         fprintf(stderr, "Error creating window!\n");
         exit(1);

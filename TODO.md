@@ -13,6 +13,7 @@
 
 ## DONE:
 
+  - put title from JSON in window
   - audit null-terminating strings in buffer code
   - use Javascript key codes 
   - debug rendering failures: Shane's quartic, dr2's molecular dynamics
