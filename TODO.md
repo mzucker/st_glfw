@@ -1,6 +1,5 @@
 # TODO:
 
-  - see if we can get away with using fewer texture units
   - dotfile api key
   - dotfile default resolution
   - check window scaling at startup to set window size correctly for high DPI
@@ -13,6 +12,7 @@
 
 ## DONE:
 
+  - we really only ever needed 4 texture units
   - put title from JSON in window
   - audit null-terminating strings in buffer code
   - use Javascript key codes 

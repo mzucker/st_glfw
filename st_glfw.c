@@ -146,9 +146,6 @@ typedef struct channel {
 
     GLuint target;
     GLuint tex_id;
-    GLuint tex_unit;
-    GLuint uniform_sampler;
-
     int src_rb_idx;
 
     int filter;
@@ -192,7 +189,6 @@ typedef struct renderbuffer {
     GLuint framebuffers[2]; 
     int framebuffer_state;
 
-    GLuint draw_tex_units[2];
     GLuint draw_tex_ids[2];
     int last_drawn;
 
@@ -204,7 +200,6 @@ renderbuffer_t renderbuffers[MAX_RENDERBUFFERS];
 int draw_order[MAX_RENDERBUFFERS];
 
 int num_renderbuffers = 0;
-int num_tex_units = 1; // tex unit zero reserved for blank textures
 
 GLubyte keymap[KEYMAP_TOTAL_BYTES];
 
@@ -637,7 +632,6 @@ void setup_framebuffer(renderbuffer_t* rb) {
    
     for (int i=0; i<2; ++i) {
         
-        debug_glActiveTexture(GL_TEXTURE0 + rb->draw_tex_units[i]);
         debug_glBindTexture(GL_TEXTURE_2D, rb->draw_tex_ids[i]);
             
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -677,9 +671,6 @@ void setup_textures(renderbuffer_t* rb) {
 
     if (rb->framebuffer_state == FRAMEBUFFER_UNINITIALIZED) {
 
-        for (int i=0; i<2; ++i) {
-            rb->draw_tex_units[i] = num_tex_units++;
-        }
         setup_framebuffer(rb);
         
     }
@@ -687,24 +678,20 @@ void setup_textures(renderbuffer_t* rb) {
     for (int i=0; i<4; ++i) {
 
         channel_t* channel = rb->channels + i;
+        if (!channel->target) { channel->target = GL_TEXTURE_2D; }
 
-        channel->uniform_sampler = glGetUniformLocation(rb->program, channel->name);
+        GLuint uniform_sampler = glGetUniformLocation(rb->program, channel->name);
+        glUniform1i(uniform_sampler, i);
         
         dprintf("setting up texture for channel %d of %s\n",
                 i, rb->name);
         
-        if (channel->ctype != CTYPE_BUFFER) {
-            
-            channel->tex_unit = num_tex_units++;
-            debug_glActiveTexture(GL_TEXTURE0 + channel->tex_unit);
-            glUniform1i(channel->uniform_sampler, channel->tex_unit);
+        if (channel->ctype && channel->ctype != CTYPE_BUFFER) {
 
-            if (channel->ctype) {
-                glGenTextures(1, &channel->tex_id);
-                debug_glBindTexture(GL_TEXTURE_2D, channel->tex_id);
-                texture_parameters(channel);
-                update_teximage(channel);
-            }
+            glGenTextures(1, &channel->tex_id);
+            debug_glBindTexture(channel->target, channel->tex_id);
+            texture_parameters(channel);
+            update_teximage(channel);
 
             check_opengl_errors("after dealing with channel");
 
@@ -836,13 +823,12 @@ void resize_framebuffers(renderbuffer_t* rb) {
     
     for (int i=0; i<2; ++i) {
 
-        debug_glActiveTexture(GL_TEXTURE0 + rb->draw_tex_units[i]);
         debug_glBindTexture(GL_TEXTURE_2D, prev_textures[i]);
         
         glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
         glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
         
-        debug_glBindTexture(GL_TEXTURE_2D, rb->draw_tex_ids[i]);
+        debug_glBindTexture(GL_TEXTURE_2D, 0);
         
         int blitw = min(w, framebuffer_size[0]);
         int blith = min(h, framebuffer_size[1]);
@@ -920,14 +906,16 @@ void render(GLFWwindow* window) {
                 rb->draw_tex_ids[cur_draw]);
         
         glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffers[cur_draw]);
-
         glUseProgram(rb->program);
+        check_opengl_errors("before doing texture stuff");
 
         for (int i=0; i<NUM_CHANNELS; ++i) {
 
             channel_t* channel = rb->channels + i;
 
-            if (channel->ctype == CTYPE_NONE) { continue; }
+            debug_glActiveTexture(GL_TEXTURE0 + i);
+            dprintf("doing texture thing for channel %d of %s\n",
+                    i, rb->name);
 
             if (channel->ctype == CTYPE_BUFFER) {
 
@@ -940,13 +928,8 @@ void render(GLFWwindow* window) {
                 channel->height = framebuffer_size[1];
 
                 GLuint src_tex = src_rb->draw_tex_ids[src_rb->last_drawn];
-                GLuint src_unit = src_rb->draw_tex_units[src_rb->last_drawn];
                 
-                debug_glActiveTexture(GL_TEXTURE0 + src_unit);
                 debug_glBindTexture(GL_TEXTURE_2D, src_tex);
-
-                glUniform1i(channel->uniform_sampler, src_unit);
-                check_opengl_errors("after updating sampler uniform");
                 
                 texture_parameters(channel);
 
@@ -954,17 +937,22 @@ void render(GLFWwindow* window) {
                     glGenerateMipmap(GL_TEXTURE_2D);
                 }
 
-                dprintf("  channel %d of %s has dims %dx%d, is using texture %d/2 with id %u from %s\n",
+                dprintf("  channel %d of %s has dims %dx%d, is using "
+                        "texture %d/2 with id %u from %s\n",
                         i, rb->name, (int)channel->width, (int)channel->height,
                         src_rb->last_drawn + 1, src_tex, src_rb->name);
-                
-            } else if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
 
-                debug_glActiveTexture(GL_TEXTURE0 + channel->tex_unit);
+            } else {
+
                 debug_glBindTexture(channel->target, channel->tex_id);
-                update_teximage(channel);
+                
+                if (channel->dirty || channel->ctype == CTYPE_KEYBOARD) {
+                    update_teximage(channel);
+                }
 
             }
+            
+            check_opengl_errors("after a texture thing");
 
             u_channel_resolution[i][0] = channel->width;
             u_channel_resolution[i][1] = channel->height;
@@ -1041,7 +1029,6 @@ void setup_keyboard(renderbuffer_t* rb, int cidx) {
 
     channel_t* channel = rb->channels + cidx;
 
-    channel->target = GL_TEXTURE_2D;
     channel->ctype = CTYPE_KEYBOARD;
     channel->width = KEYMAP_BYTES_PER_ROW / 3;
     channel->height = KEYMAP_ROWS;
@@ -1169,14 +1156,13 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs, int is_local) {
             snprintf(url, 1024, "http://www.shadertoy.com%s", src);
             src = url;
        }
-        
+
         if (!strcmp(ctype, "keyboard")) {
             
             setup_keyboard(rb, cidx);
             
         } else if (!strcmp(ctype, "texture")) {
             
-            channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_TEXTURE;
 
             load_image(channel, src, src_is_file);
@@ -1224,7 +1210,6 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs, int is_local) {
 
         } else if (!strcmp(ctype, "buffer")) {
 
-            channel->target = GL_TEXTURE_2D;
             channel->ctype = CTYPE_BUFFER;
             channel->src_rb_idx = jsobject_integer(input_i, "id");
 
