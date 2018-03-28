@@ -1,6 +1,5 @@
 # TODO:
 
-  - audit null-terminating strings in buffer code
   - see if we can get away with using fewer texture units
   - dotfile api key
   - dotfile default resolution
@@ -14,6 +13,7 @@
 
 ## DONE:
 
+  - audit null-terminating strings in buffer code
   - use Javascript key codes 
   - debug rendering failures: Shane's quartic, dr2's molecular dynamics
   - replace `code` with `code_file` to point into filesystem for local JSON

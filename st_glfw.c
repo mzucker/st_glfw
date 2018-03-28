@@ -36,8 +36,17 @@ enum {
 
 #define dprintf if (0) printf
 
-#define debug_glBindTexture(target, id) do { dprintf("  binding texture %s to %u\n", target_string(target), id); glBindTexture(target, id); } while (0)
-#define debug_glActiveTexture(unit) do { dprintf("  activating texture unit %d\n", (int)(unit - GL_TEXTURE0)); glActiveTexture(unit); } while(0)
+#define debug_glBindTexture(target, id) do {    \
+        dprintf("  binding texture %s to %u\n", \
+                target_string(target), id);     \
+        glBindTexture(target, id);              \
+    } while (0)
+
+#define debug_glActiveTexture(unit) do {            \
+        dprintf("  activating texture unit %d\n",   \
+                (int)(unit - GL_TEXTURE0));         \
+        glActiveTexture(unit);                      \
+    } while(0)
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1019,9 +1028,9 @@ void new_shader_source(renderbuffer_t* rb) {
 
     char lineno[256];
     snprintf(lineno, 256, "\n#line 0 %d\n", rb->shader_count);
-    
-    buf_append(&rb->shader_buf, lineno, strlen(lineno));
 
+    buf_append_mem(&rb->shader_buf, lineno, strlen(lineno), 
+                   BUF_NULL_TERMINATE);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1051,7 +1060,7 @@ void load_image(channel_t* channel, const char* src, int is_local_file) {
             
     if (is_local_file) {
 
-        buf_read_file(&raw, src, MAX_FILE_LENGTH);            
+        buf_append_file(&raw, src, MAX_FILE_LENGTH, BUF_RAW_APPEND);
 
     } else {
 
@@ -1313,14 +1322,17 @@ void load_json(int is_local) {
 
         int code_is_file = 0;
 
-        const char* code_string = jsobject_first_string(renderstep, code_strings, &code_is_file);
+        const char* code_string = jsobject_first_string(renderstep,
+                                                        code_strings, &code_is_file);
 
         new_shader_source(rb);
 
         if (code_is_file) {
-            buf_read_file(&rb->shader_buf, code_string, MAX_PROGRAM_LENGTH);
+            buf_append_file(&rb->shader_buf, code_string,
+                            MAX_PROGRAM_LENGTH, BUF_NULL_TERMINATE);
         } else {
-            buf_append(&rb->shader_buf, code_string, strlen(code_string));
+            buf_append_mem(&rb->shader_buf, code_string,
+                           strlen(code_string), BUF_NULL_TERMINATE);
         }
         
         rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
@@ -1341,7 +1353,8 @@ void load_json(int is_local) {
         const char* code_string = jsobject_first_string(common, code_strings, &code_is_file);
 
         if (code_is_file) {
-            buf_read_file(&common_buf, code_string, MAX_PROGRAM_LENGTH);
+            buf_append_file(&common_buf, code_string,
+                            MAX_PROGRAM_LENGTH, BUF_NULL_TERMINATE);
             code_string = common_buf.data;
         }
 
@@ -1695,7 +1708,8 @@ void get_options(int argc, char** argv) {
         
     } else if (is_json_input) {
         
-        buf_read_file(&json_buf, argv[argc-1], MAX_FILE_LENGTH);
+        buf_append_file(&json_buf, argv[argc-1],
+                        MAX_FILE_LENGTH, BUF_RAW_APPEND);
 
         const int is_local = 1;
         load_json(is_local);
@@ -1714,7 +1728,8 @@ void get_options(int argc, char** argv) {
             const char* filename = argv[i];
                 
             new_shader_source(rb);
-            buf_read_file(&rb->shader_buf, filename, MAX_FILE_LENGTH);
+            buf_append_file(&rb->shader_buf, filename,
+                            MAX_PROGRAM_LENGTH, BUF_NULL_TERMINATE);
             rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = rb->shader_buf.data;
                 
         }
@@ -2083,19 +2098,16 @@ int main(int argc, char** argv) {
     glfwTerminate();
 
     buf_free(&common_buf);
-    
     buf_free(&json_buf);
 
     for (int j=0; j<num_renderbuffers; ++j) {
         
         renderbuffer_t* rb = renderbuffers + j;
-        
         buf_free(&rb->shader_buf);
         
         for (int i=0; i<NUM_CHANNELS; ++i) {
             
             channel_t* channel = rb->channels + i;
-            
             buf_free(&channel->texture);
             
         }

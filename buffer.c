@@ -38,21 +38,22 @@ void buf_free(buffer_t* buf) {
 
 //////////////////////////////////////////////////////////////////////
 
-void buf_append(buffer_t* buf, const void* src, size_t len) {
+void buf_append_mem(buffer_t* buf, const void* src,
+                    size_t len, int null_terminate) {
 
-    buf_grow(buf, len+1);
+    buf_grow(buf, len + (null_terminate ? 1 : 0));
     
     memcpy(buf->data + buf->size, src, len);
     
     buf->size += len;
-    buf->data[buf->size] = 0;
+    if (null_terminate) { buf->data[buf->size] = 0; }
 
 }
 
 //////////////////////////////////////////////////////////////////////
 
-void buf_read_file(buffer_t* buf, const char* filename,
-                   size_t max_length) {
+void buf_append_file(buffer_t* buf, const char* filename,
+                     size_t max_length, int null_terminate) {
 
     FILE* fp = fopen(filename, "r");
     if (!fp) {
@@ -70,7 +71,7 @@ void buf_read_file(buffer_t* buf, const char* filename,
   
     fseek(fp, 0, SEEK_SET);
     
-    buf_grow(buf, fsize+1);
+    buf_grow(buf, fsize + (null_terminate ? 1 : 0));
 
     int nread = fread(buf->data + buf->size, fsize, 1, fp);
 
@@ -80,6 +81,6 @@ void buf_read_file(buffer_t* buf, const char* filename,
     }
 
     buf->size += fsize;
-    buf->data[buf->size] = 0;
+    if (null_terminate) { buf->data[buf->size] = 0; }
 
 }

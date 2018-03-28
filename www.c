@@ -5,7 +5,7 @@ size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
 
     buffer_t* buf = (buffer_t*)b;
 
-    buf_append(buf, ptr, size*nmemb);
+    buf_append_mem(buf, ptr, size*nmemb, BUF_RAW_APPEND);
     
     return size * nmemb;
     
