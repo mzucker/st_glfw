@@ -108,7 +108,8 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "uniform vec4 iDate; "
     "uniform int iFrame; "
     "uniform vec3 iChannelResolution[4]; "
-    "float iGlobalTime; "
+    "uniform float iChannelTime[4]; "
+    "uniform float iSampleRate; "
     "out vec4 fragColor; ",
 
     "", // iChannel0
@@ -122,7 +123,6 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "}\n",
     
     "\nvoid main() {\n"
-    "  iGlobalTime = iTime;\n"
     "  mainImage(fragColor, gl_FragCoord.xy);\n"
     "}\n"
     
@@ -217,6 +217,8 @@ GLfloat u_mouse[4] = { -1, -1, -1, -1 };
 GLfloat u_time_delta = 0;
 GLfloat u_date[4]; // set every frame
 GLfloat u_channel_resolution[NUM_CHANNELS][3]; // set per-buffer every frame
+GLfloat u_channel_time[NUM_CHANNELS] = { 0, 0, 0, 0 };
+GLfloat u_sample_rate = 44100.;
 
 GLint u_frame = 0;
 
@@ -504,6 +506,8 @@ void setup_uniforms() {
     add_uniform("iDate", &u_date, GL_FLOAT_VEC4, 1);
     add_uniform("iFrame", &u_frame, GL_INT, 1);
     add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, NUM_CHANNELS);
+    add_uniform("iChannelTime", u_channel_time, GL_FLOAT, 4);
+    add_uniform("iSampleRate", &u_sample_rate, GL_FLOAT, 1);
 
     check_opengl_errors("after setting up uniforms");
 
@@ -1213,15 +1217,10 @@ void load_inputs(renderbuffer_t* rb, json_t* inputs, int is_local) {
             channel->ctype = CTYPE_BUFFER;
             channel->src_rb_idx = jsobject_integer(input_i, "id");
 
-        } else if (!strcmp(ctype, "musicstream")) {
+        } else {
 
             fprintf(stderr, "warning: ignoring input type %s\n", ctype);
-            
-        } else {
-            
-            fprintf(stderr, "unsupported input type: %s\n", ctype);
-            exit(1);
-            
+                        
         }
         
     }
@@ -1276,8 +1275,8 @@ void load_json(int is_local) {
             
         } else if (strcmp(type, "buffer") != 0) {
 
-            fprintf(stderr, "render step type %s not supported yet!\n", type);
-            exit(1);
+            fprintf(stderr, "warning: render step type %s not supported yet!\n", type);
+            continue;
 
         }
 
