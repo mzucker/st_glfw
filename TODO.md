@@ -1,6 +1,7 @@
 # TODO:
 
-  - debug rendering failures: Shane's quartic, dr2's molecular dynamics
+  - audit null-terminating strings in buffer code
+  - see if we can get away with using fewer texture units
   - dotfile api key
   - dotfile default resolution
   - check window scaling at startup to set window size correctly for high DPI
@@ -14,6 +15,7 @@
 
 ## DONE:
 
+  - debug rendering failures: Shane's quartic, dr2's molecular dynamics
   - replace `code` with `code_file` to point into filesystem for local JSON
   - replace `src` with `src_file` to point into filesystem for local JSON
   - prevent local file access from remote JSON
