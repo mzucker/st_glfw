@@ -11,10 +11,10 @@
   - unwrapper script to split JSON into constutient parts (combine with save, above?)
   - command-line options to specify textures?
   - make sure we fail reasonably on missing shadertoy features
-  - see how hard it would be to use same key codes as website
 
 ## DONE:
 
+  - use Javascript key codes 
   - debug rendering failures: Shane's quartic, dr2's molecular dynamics
   - replace `code` with `code_file` to point into filesystem for local JSON
   - replace `src` with `src_file` to point into filesystem for local JSON
