@@ -195,7 +195,7 @@ renderbuffer_t renderbuffers[MAX_RENDERBUFFERS];
 int draw_order[MAX_RENDERBUFFERS];
 
 int num_renderbuffers = 0;
-int num_tex_units = 0;
+int num_tex_units = 1; // tex unit zero reserved for blank textures
 
 GLubyte keymap[KEYMAP_TOTAL_BYTES];
 
@@ -395,34 +395,31 @@ void setup_shaders(renderbuffer_t* rb) {
 
         channel_t* channel = rb->channels + i;
 
-        if (channel->ctype != CTYPE_NONE) {
+        const char* stype = 0;
 
-            const char* stype = 0;
-
-            switch (channel->ctype) {
-            case CTYPE_BUFFER:
-            case CTYPE_TEXTURE:
-            case CTYPE_KEYBOARD:
-                stype = "sampler2D";
-                break;
-            case CTYPE_CUBEMAP:
-                stype = "samplerCube";
-                break;
-            default:
-                fprintf(stderr, "invalid channel type!\n");
-                exit(1);
-            }
-
-            snprintf(channel->name, MAX_CHANNEL_NAME_LENGTH,
-                     "iChannel%d", i);
-
-            snprintf(sbuf[i], MAX_CHANNEL_DECL_LENGTH,
-                     "uniform %s %s; ",
-                     stype, channel->name);
-
-            rb->fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
-
+        switch (channel->ctype) {
+        case CTYPE_BUFFER:
+        case CTYPE_TEXTURE:
+        case CTYPE_KEYBOARD:
+        case CTYPE_NONE:
+            stype = "sampler2D";
+            break;
+        case CTYPE_CUBEMAP:
+            stype = "samplerCube";
+            break;
+        default:
+            fprintf(stderr, "invalid channel type!\n");
+            exit(1);
         }
+
+        snprintf(channel->name, MAX_CHANNEL_NAME_LENGTH,
+                 "iChannel%d", i);
+
+        snprintf(sbuf[i], MAX_CHANNEL_DECL_LENGTH,
+                 "uniform %s %s; ",
+                 stype, channel->name);
+
+        rb->fragment_src[FRAG_SRC_CH0_SLOT+i] = sbuf[i];
         
     }
 
@@ -680,33 +677,27 @@ void setup_textures(renderbuffer_t* rb) {
 
         channel_t* channel = rb->channels + i;
 
-        if (channel->ctype) {
-
-            channel->uniform_sampler = glGetUniformLocation(rb->program,
-                                                            channel->name);
-
-            dprintf("setting up texture for channel %d of %s\n",
-                    i, rb->name);
-
+        channel->uniform_sampler = glGetUniformLocation(rb->program, channel->name);
+        
+        dprintf("setting up texture for channel %d of %s\n",
+                i, rb->name);
+        
+        if (channel->ctype != CTYPE_BUFFER) {
             
-            if (channel->ctype != CTYPE_BUFFER) {
+            channel->tex_unit = num_tex_units++;
+            debug_glActiveTexture(GL_TEXTURE0 + channel->tex_unit);
+            glUniform1i(channel->uniform_sampler, channel->tex_unit);
 
-                channel->tex_unit = num_tex_units++;
-                debug_glActiveTexture(GL_TEXTURE0 + channel->tex_unit);
-                glUniform1i(channel->uniform_sampler, channel->tex_unit);
-                
+            if (channel->ctype) {
                 glGenTextures(1, &channel->tex_id);
                 debug_glBindTexture(GL_TEXTURE_2D, channel->tex_id);
-
                 texture_parameters(channel);
-                
                 update_teximage(channel);
-
             }
 
             check_opengl_errors("after dealing with channel");
 
-        }
+        } 
         
     }
 
@@ -1896,18 +1887,25 @@ void key_callback(GLFWwindow* window, int key,
 
     int jskey = js_from_glfw_key(key);
 
+#ifdef __APPLE__    
+    int ctrl_pressed = mods & GLFW_MOD_SUPER;
+#else
+    int ctrl_pressed = mods & GLFL_MOD_CTRL;
+#endif
+        
+
     if (action == GLFW_PRESS) {
         
-        if (key == 'Q' && (mods & GLFW_MOD_ALT)) {
+        if (key == 'Q' && ctrl_pressed) {
             
             glfwSetWindowShouldClose(window, GL_TRUE);
             
         } else if ((key == GLFW_KEY_BACKSPACE || key == GLFW_KEY_DELETE) &&
-                   (mods & GLFW_MOD_ALT)) {
+                   ctrl_pressed) {
 
             reset();
             
-        } else if (key == '`' && (mods & GLFW_MOD_ALT)) {
+        } else if (key == '`' && ctrl_pressed) {
 
             animating = !animating;
             
@@ -1919,7 +1917,7 @@ void key_callback(GLFWwindow* window, int key,
                 printf("paused at %f\n", u_time);
             }
             
-        } else if (toupper(key) == 'S' && (mods & GLFW_MOD_ALT)) {
+        } else if (toupper(key) == 'S' && ctrl_pressed) {
 
             printf("saving a screenshot!\n");
             single_shot = 1;
