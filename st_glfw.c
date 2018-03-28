@@ -16,7 +16,7 @@
 
 enum {
 
-    MAX_RENDERBUFFERS = 4,
+    MAX_RENDERBUFFERS = 5,
     
     MAX_UNIFORMS = 16,
     
@@ -212,7 +212,7 @@ GLfloat u_resolution[3]; // set every frame
 GLfloat u_mouse[4] = { -1, -1, -1, -1 }; 
 GLfloat u_time_delta = 0;
 GLfloat u_date[4]; // set every frame
-GLfloat u_channel_resolution[4][3]; // set per-buffer every frame
+GLfloat u_channel_resolution[NUM_CHANNELS][3]; // set per-buffer every frame
 
 GLint u_frame = 0;
 
@@ -500,7 +500,7 @@ void setup_uniforms() {
     add_uniform("iTimeDelta", &u_time_delta, GL_FLOAT, 1);
     add_uniform("iDate", &u_date, GL_FLOAT_VEC4, 1);
     add_uniform("iFrame", &u_frame, GL_INT, 1);
-    add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, 4);
+    add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, NUM_CHANNELS);
 
     check_opengl_errors("after setting up uniforms");
 
@@ -1261,7 +1261,7 @@ void load_json(int is_local) {
         code_strings[1] = "code_file";
     }
 
-    int output_ids[MAX_RENDERBUFFERS] = { -1, -1, -1, -1 };
+    int output_ids[MAX_RENDERBUFFERS];
     
     for (int j=0; j<len; ++j) {
 
@@ -1406,7 +1406,7 @@ void load_json(int is_local) {
     memset(assigned, 0, sizeof(assigned));
 
     const char* buf_names[MAX_RENDERBUFFERS] = {
-        "Buf A", "Buf B", "Buf C", 0,
+        "Buf A", "Buf B", "Buf C", "Buf D", 0,
     };
     int cur_name_idx = 0;
 
@@ -1586,7 +1586,7 @@ void get_options(int argc, char** argv) {
 
             key_cidx = getint(argc, argv, i+1);
             
-            if (key_cidx < 0 || key_cidx >= 4) {
+            if (key_cidx < 0 || key_cidx >= NUM_CHANNELS) {
                 fprintf(stderr, "invalid channel for keyboard (must be 0-3)\n");
                 exit(1);
             }
