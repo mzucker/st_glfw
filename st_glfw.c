@@ -1,4 +1,10 @@
+#ifdef ST_GLFW_USE_GLEW
 #include <GL/glew.h>
+#else
+#define GL_GLEXT_PROTOTYPES
+#include "glcorearb.h"
+#endif
+
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -969,7 +975,6 @@ void render(GLFWwindow* window) {
         check_opengl_errors("after set uniforms");
 
         glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
-        glClear(GL_COLOR_BUFFER_BIT);
 
         glBindVertexArray(rb->vao);
         glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
@@ -979,12 +984,15 @@ void render(GLFWwindow* window) {
 
         rb->last_drawn = cur_draw;
 
-        glFinish();
-
         check_opengl_errors("after rendering step");
 
     }
 
+    glFinish();
+    double frame_end = glfwGetTime();
+    u_time_delta = frame_end - frame_start;
+    printf("draw time = %8.5f ms/frame\n", u_time_delta*1e3);
+    
     dprintf("\n");
 
     if (recording || single_shot) {
@@ -995,8 +1003,6 @@ void render(GLFWwindow* window) {
 
     memset(key_press, 0, KEYMAP_BYTES_PER_ROW);
 
-    double frame_end = glfwGetTime();
-    u_time_delta = frame_end - frame_start;
     
     u_frame += 1;
 
@@ -1470,8 +1476,10 @@ void dieusage() {
             "usage: st_glfw [OPTIONS] (-id SHADERID | BUNDLE.json | SHADER1.glsl [SHADER2.glsl ...])\n"
             "\n"
             "OPTIONS:\n"
+#ifdef ST_GLFW_USE_CURL            
             "  -id        SHADERID  Load specified shader from Shadertoy.com\n"
             "  -apikey    KEY       Set Shadertoy.com API key (needed to load shaders)\n"
+#endif            
             "  -keyboard  CHANNEL   Set up keyboard input channel (raw GLSL only)\n"
             "  -geometry  WxH       Initialize window with width W and height H\n"
             "  -speedup   FACTOR    Speed up by this factor\n"
@@ -1597,16 +1605,8 @@ void get_options(int argc, char** argv) {
             target_frame_duration = 1.0 / getdouble(argc, argv, i+1);
             i += 1;
 
-        } else if (!strcmp(argv[i], "-id")) {
-
-            if (i+1 >= argc) {
-                fprintf(stderr, "error: expected id for %s\n", argv[i]);
-                dieusage();
-            }
+#ifdef ST_GLFW_USE_CURL
             
-            shadertoy_id = argv[i+1];
-            i += 1;
-
         } else if (!strcmp(argv[i], "-id")) {
 
             if (i+1 >= argc) {
@@ -1626,7 +1626,9 @@ void get_options(int argc, char** argv) {
             
             api_key = argv[i+1];
             i += 1;
-
+            
+#endif
+            
         } else if (argv[i][0] == '-' && !force_files) {
 
             fprintf(stderr, "error: unrecognized switch %s\n", argv[i]);
@@ -1900,7 +1902,7 @@ void key_callback(GLFWwindow* window, int key,
 #ifdef __APPLE__    
     int ctrl_pressed = mods & GLFW_MOD_SUPER;
 #else
-    int ctrl_pressed = mods & GLFL_MOD_CTRL;
+    int ctrl_pressed = mods & GLFW_MOD_CONTROL;
 #endif
         
 
@@ -2041,8 +2043,10 @@ GLFWwindow* setup_window() {
     glfwSetWindowSizeCallback(window, window_size_callback);
     
     glfwMakeContextCurrent(window);
+#ifdef ST_GLFW_USE_GLEW
     glewInit();
-    glfwSwapInterval(1);
+#endif    
+    glfwSwapInterval(0);
     
     check_opengl_errors("after setting up glfw & glew");
 

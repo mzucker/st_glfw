@@ -1,5 +1,10 @@
 #include "www.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifdef ST_GLFW_USE_CURL
 #include <curl/curl.h>
+#endif
 
 size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
 
@@ -15,6 +20,13 @@ size_t write_response(void *ptr, size_t size, size_t nmemb, void * b) {
 
 void fetch_url(const char* url, buffer_t* buf) {
 
+#ifndef ST_GLFW_USE_CURL
+
+    fprintf(stderr, "not compiled with curl support, can't fetching URL!");
+    exit(1);
+
+#else
+    
     curl_global_init(CURL_GLOBAL_ALL);
 
     CURL* curl = curl_easy_init();
@@ -49,9 +61,13 @@ void fetch_url(const char* url, buffer_t* buf) {
 
     printf("  ...retrieved data of length %d\n", (int)buf->size);
 
+#endif
+    
 } 
 
+
 //////////////////////////////////////////////////////////////////////
+
 
 json_t* jsobject(const json_t* object,
                   const char* key,
