@@ -244,10 +244,13 @@ double target_frame_duration = 1.0/60.0;
 double speedup = 1.0;
 double starttime = 0.0;
 
-int record_frames = 100;
+int startup_frames = 10;
+int stop_at_frame = 100;
+float total_delta = 0.0;
 
 int animating = 1;
 int recording = 0;
+int profiling = 0;
 int need_render = 0;
 int single_shot = 0;
 int mouse_down = 0;
@@ -991,7 +994,11 @@ void render(GLFWwindow* window) {
     glFinish();
     double frame_end = glfwGetTime();
     u_time_delta = frame_end - frame_start;
-    printf("draw time = %8.5f ms/frame\n", u_time_delta*1e3);
+    
+    if (profiling && u_frame >= startup_frames) {
+        printf("draw time = %8.1f ms/frame\n", u_time_delta*1e3);
+        total_delta += u_time_delta;
+    }
     
     dprintf("\n");
 
@@ -1483,8 +1490,10 @@ void dieusage() {
             "  -keyboard  CHANNEL   Set up keyboard input channel (raw GLSL only)\n"
             "  -geometry  WxH       Initialize window with width W and height H\n"
             "  -speedup   FACTOR    Speed up by this factor\n"
-            "  -frames    COUNT     Record COUNT frames to PNG\n"
-            "  -duration  TIME      Record TIME seconds to PNG\n"
+            "  -record              Output one PNG file per frame\n" 
+            "  -profile             Uncap framerate and profile frame times\n"
+            "  -frames    COUNT     Record/profile for COUNT frames\n"
+            "  -duration  TIME      Record/profile for TIME seconds\n"
             "  -fps       FPS       Target FPS for recording\n"
             "  -starttime TIME      Starting value of iTime uniform in seconds\n"
             "  -paused              Start out paused\n"
@@ -1576,17 +1585,24 @@ void get_options(int argc, char** argv) {
             
             starttime = getdouble(argc, argv, i+1);
             i += 1;
+
+            
+        } else if (!strcmp(argv[i], "-record")) {
+
+            recording = 1;
+            
+        } else if (!strcmp(argv[i], "-profile")) {
+
+            profiling = 1;
             
         } else if (!strcmp(argv[i], "-duration")) {
             
-            recording = 1;
             rduration = getdouble(argc, argv, i+1);
             i += 1;
             
         } else if (!strcmp(argv[i], "-frames")) {
             
-            recording = 1;
-            record_frames = getint(argc, argv, i+1);
+            stop_at_frame = getint(argc, argv, i+1);
             i += 1;
             
         } else if (!strcmp(argv[i], "-keyboard")) {
@@ -1656,13 +1672,17 @@ void get_options(int argc, char** argv) {
 
     }
 
-    if (recording && rduration) {
-        record_frames = floor(rduration / (target_frame_duration * speedup));
+    if ((recording || profiling) && rduration) {
+        stop_at_frame = floor(rduration / (target_frame_duration * speedup));
     }
 
     if (recording) {
-        printf("will record for %d frames\n", record_frames);
+        printf("will record for %d frames\n", stop_at_frame);
+    } else if (profiling) {
+        printf("will profile for %d frames\n", stop_at_frame);
+        stop_at_frame += startup_frames;
     }
+        
 
     int is_json_input = 0;
 
@@ -2045,8 +2065,8 @@ GLFWwindow* setup_window() {
     glfwMakeContextCurrent(window);
 #ifdef ST_GLFW_USE_GLEW
     glewInit();
-#endif    
-    glfwSwapInterval(0);
+#endif
+    glfwSwapInterval(profiling ? 0 : 1);
     
     check_opengl_errors("after setting up glfw & glew");
 
@@ -2087,11 +2107,16 @@ int main(int argc, char** argv) {
             glfwWaitEvents();
         }
         
-        if (recording && record_frames == png_frame) {
+        if ((recording || profiling) && stop_at_frame == u_frame) {
             break;
         }
         
-    }    
+    }
+
+    if (profiling) {
+        printf("average frame time was %8.1f ms/frame\n",
+               1e3 * total_delta / (stop_at_frame - startup_frames));
+    }
 
     glfwDestroyWindow(window);
     glfwTerminate();
