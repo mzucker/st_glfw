@@ -247,6 +247,7 @@ double starttime = 0.0;
 int startup_frames = 10;
 int stop_at_frame = 100;
 float total_delta = 0.0;
+float total_delta2 = 0.0;
 
 int animating = 1;
 int recording = 0;
@@ -998,6 +999,7 @@ void render(GLFWwindow* window) {
     if (profiling && u_frame >= startup_frames) {
         printf("draw time = %8.1f ms/frame\n", u_time_delta*1e3);
         total_delta += u_time_delta;
+        total_delta2 += u_time_delta*u_time_delta;
     }
     
     dprintf("\n");
@@ -2114,8 +2116,11 @@ int main(int argc, char** argv) {
     }
 
     if (profiling) {
-        printf("average frame time was %8.1f ms/frame\n",
-               1e3 * total_delta / (stop_at_frame - startup_frames));
+        float N = (stop_at_frame - startup_frames);
+        float mean = total_delta / N;
+        float std = sqrt(N*total_delta2 - total_delta*total_delta)/N;
+        printf("average: %.3f ms/frame      std.: %.3f ms/frame\n",
+               1e3*mean, 1e3*std);
     }
 
     glfwDestroyWindow(window);
