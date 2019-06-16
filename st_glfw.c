@@ -1306,7 +1306,7 @@ void load_json(int is_local) {
         int nout = json_array_size(outputs);
 
         rb->name = jsobject_string(renderstep, "name");
-        output_ids[j] = -1;
+        output_ids[num_renderbuffers] = -1;
 
         if (nout) {
             
@@ -1316,7 +1316,7 @@ void load_json(int is_local) {
             }
 
             json_t* output = jsarray(outputs, 0, JSON_OBJECT);
-            output_ids[j] = jsobject_integer(output, "id");
+            output_ids[num_renderbuffers] = jsobject_integer(output, "id");
             
             if (num_renderbuffers != image_index) {
                 rb->framebuffer_state = FRAMEBUFFER_UNINITIALIZED;
@@ -1324,7 +1324,8 @@ void load_json(int is_local) {
 
         }
 
-        dprintf("renderstep %s has output id %d\n", rb->name, output_ids[j]);
+        dprintf("renderstep %s has output id %d\n",
+                rb->name, output_ids[num_renderbuffers]);
 
         json_t* inputs = jsobject(renderstep, "inputs", JSON_ARRAY);
 
@@ -1389,7 +1390,11 @@ void load_json(int is_local) {
             if (channel->ctype == CTYPE_BUFFER) {
                 
                 int found = 0;
-                
+
+                dprintf("  looking for id %d to feed channel %d of %s\n",
+                        channel->src_rb_idx,
+                        i, rb->name);
+
                 for (int k=0; k<num_renderbuffers; ++k) {
                     
                     if (output_ids[k] == channel->src_rb_idx) {
