@@ -90,6 +90,7 @@ const char* vertex_src[1] = {
 
 enum {
     FRAG_SRC_VERSION_SLOT = 0,
+    FRAG_SRC_DEFINES_SLOT,
     FRAG_SRC_COMMON_SLOT,
     FRAG_SRC_UNIFORMS_SLOT,
     FRAG_SRC_CH0_SLOT,
@@ -105,7 +106,8 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
     "#version 330\n#line 0 0\n",
     
-    "",
+    "", // defines
+    "", // common
     
     "uniform float iTime; "
     "uniform vec3 iResolution; "
@@ -268,6 +270,8 @@ json_t* json_root = NULL;
 
 buffer_t json_buf = { 0, 0, 0 };
 
+buffer_t defines_buf = { 0, 0, 0 };
+
 buffer_t common_buf = { 0, 0, 0 };
 
 //////////////////////////////////////////////////////////////////////
@@ -406,6 +410,11 @@ void setup_shaders(renderbuffer_t* rb) {
 
     GLuint vertex_shader = make_shader(GL_VERTEX_SHADER, 1,
                                        vertex_src);
+
+
+    if (defines_buf.data) {
+        rb->fragment_src[FRAG_SRC_DEFINES_SLOT] = defines_buf.data;
+    }
 
     char sbuf[NUM_CHANNELS][MAX_CHANNEL_DECL_LENGTH];
     
@@ -1361,7 +1370,8 @@ void load_json(int is_local) {
     if (common) {
 
         int code_is_file;
-        const char* code_string = jsobject_first_string(common, code_strings, &code_is_file);
+        const char* code_string = jsobject_first_string(common,
+                                                        code_strings, &code_is_file);
 
         if (code_is_file) {
             buf_append_file(&common_buf, code_string,
@@ -1504,11 +1514,51 @@ void dieusage() {
             "  -fps       FPS       Target FPS for recording\n"
             "  -starttime TIME      Starting value of iTime uniform in seconds\n"
             "  -paused              Start out paused\n"
+            "  -D         KEY=VAL   Preprocessor define KEY=VAL\n"
             "\n"
             );
   
     exit(1);
   
+}
+
+void add_define(int argc, char** argv, int i) {
+
+    if (i >= argc) {
+        fprintf(stderr, "error: must have name for -D argument!\n");
+        dieusage();
+    }
+    
+    const char* keyval = argv[i];
+    const char* val = "1";
+            
+    int keylen=0;
+
+    char* sep = strchr(keyval, '=');
+    if (sep == NULL) {
+        keylen = strlen(keyval);
+    } else {
+        keylen = sep - keyval;
+        val = sep+1;
+    }
+
+    if (!keylen || !strlen(val)) {
+        fprintf(stderr, "error: -D define must be of form KEY or KEY=VAL!\n");
+        dieusage();
+    }
+
+    char buf[1024];
+    int l = snprintf(buf, 1024, "#define %.*s %s\n", keylen, keyval, val);
+
+    if (l >= 1023) {
+        fprintf(stderr, "error: -D define too long!\n");
+        dieusage();
+    }
+
+    printf("%s", buf);
+
+    buf_append_mem(&defines_buf, buf, l, BUF_RAW_APPEND);
+    
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1627,6 +1677,13 @@ void get_options(int argc, char** argv) {
             
             target_frame_duration = 1.0 / getdouble(argc, argv, i+1);
             i += 1;
+
+        } else if (!strcmp(argv[i], "-D")) {
+
+            add_define(argc, argv, i+1);
+            i += 1;
+
+            
 
 #ifdef ST_GLFW_USE_CURL
             
@@ -1760,6 +1817,10 @@ void get_options(int argc, char** argv) {
             
     }
 
+    if (defines_buf.data) {
+        char null_term = '\0';
+        buf_append_mem(&defines_buf, &null_term, 1, BUF_RAW_APPEND);
+    }
 
 }
 
@@ -2131,6 +2192,7 @@ int main(int argc, char** argv) {
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    buf_free(&defines_buf);
     buf_free(&common_buf);
     buf_free(&json_buf);
 
