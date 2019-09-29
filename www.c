@@ -1,6 +1,7 @@
 #include "www.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef ST_GLFW_USE_CURL
 #include <curl/curl.h>
@@ -76,12 +77,12 @@ json_t* jsobject(const json_t* object,
     json_t* j = json_object_get(object, key);
     
     if (!j) {
-        fprintf(stderr, "error: JSON key not found: %s\n", key);
+        fprintf(stderr, "JSON error: JSON key not found: %s\n", key);
         exit(1);
     }
 
     if (json_typeof(j) != type) {
-        fprintf(stderr, "error: incorrect type for %s in JSON\n", key);
+        fprintf(stderr, "JSON error: incorrect type for %s in JSON\n", key);
         exit(1);
     }
 
@@ -112,7 +113,7 @@ json_t* jsobject_first(const json_t* object,
         if (!j) { continue; }
         
         if (json_typeof(j) != type) {
-            fprintf(stderr, "error: incorrect type for %s in JSON\n", keys[i]);
+            fprintf(stderr, "JSON error: incorrect type for %s in JSON\n", keys[i]);
             exit(1);
         }
 
@@ -121,7 +122,7 @@ json_t* jsobject_first(const json_t* object,
         
     }
 
-    fprintf(stderr, "error: none of the keys (");
+    fprintf(stderr, "JSON error: none of the keys (");
     for (int i=0; keys[i]; ++i) {
         if (i)  { fprintf(stderr, ", "); }
         fprintf(stderr, "%s", keys[i]);
@@ -162,12 +163,12 @@ json_t* jsarray(const json_t* array,
     json_t* j = json_array_get(array, idx);
     
     if (!j) {
-        fprintf(stderr, "error: array item %d not found in JSON\n", idx);
+        fprintf(stderr, "JSON error: array item %d not found in JSON\n", idx);
         exit(1);
     }
 
     if (json_typeof(j) != type) {
-        fprintf(stderr, "error: incorrect type for array item %d in JSON\n", idx);
+        fprintf(stderr, "JSON error: incorrect type for array item %d in JSON\n", idx);
         exit(1);
     }
 
@@ -181,15 +182,25 @@ json_t* jsparse(const buffer_t* buf) {
     
     json_error_t error;
 
-    json_t* json_root = json_loadb(buf->data, buf->size, 0, &error);
+    const char* data = buf->data;
+    size_t size = buf->size;
+
+    // check for UTF-8 BOM :(
+    if (size > 3 && memcmp("\xef\xbb\xbf", data, 3) == 0) {
+        fprintf(stderr, "JSON has utf-8 BOM!\n");
+        size -= 3;
+        data += 3;
+    }
+
+    json_t* json_root = json_loadb(data, size, 0, &error);
     
     if (!json_root) {
-        fprintf(stderr, "error: on line %d: %s\n", error.line, error.text);
+        fprintf(stderr, "JSON error: on line %d: %s\n", error.line, error.text);
         exit(1);
     }
 
     if (!json_is_object(json_root)) {
-        fprintf(stderr, "expected JSON root to be object!\n");
+        fprintf(stderr, "JSON error: expected JSON root to be object!\n");
         exit(1);
     }
 
