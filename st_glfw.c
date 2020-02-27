@@ -2107,14 +2107,26 @@ GLFWwindow* setup_window() {
 #endif
 
     glfwWindowHint(GLFW_DOUBLEBUFFER, GL_TRUE);
+
+
+    float xscale=1.0, yscale=1.0;
+
+#if (GLFW_VERSION_MAJOR >= 3 && GLFW_VERSION_MINOR >= 3)    
+
+    glfwGetMonitorContentScale(glfwGetPrimaryMonitor(), &xscale, &yscale);
+
+    printf("monitor scale=%f, %f\n", xscale, yscale);
+
+#endif    
     
-    
-    GLFWwindow* window = glfwCreateWindow(window_size[0], window_size[1],
+    GLFWwindow* window = glfwCreateWindow(window_size[0]/xscale,
+                                          window_size[1]/yscale,
                                           window_title, NULL, NULL);
     if (!window) {
         fprintf(stderr, "Error creating window!\n");
         exit(1);
     }
+
 
     glfwGetWindowSize(window, window_size+0, window_size+1);
 
@@ -2124,6 +2136,8 @@ GLFWwindow* setup_window() {
         float denom = window_size[i] ? window_size[i] : 1;
         pixel_scale[i] = framebuffer_size[i] / denom;
     }
+    printf("pixel scale=%f %f\n", pixel_scale[0], pixel_scale[1]);
+
     
     glfwSetKeyCallback(window, key_callback);
     glfwSetCursorPosCallback(window, cursor_pos_callback);
