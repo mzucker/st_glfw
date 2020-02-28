@@ -22,7 +22,7 @@
 
 enum {
 
-    MAX_RENDERBUFFERS = 5,
+    MAX_RENDERBUFFERS = 6,
     
     MAX_UNIFORMS = 16,
     
@@ -40,7 +40,7 @@ enum {
     
 };
 
-#define dprintf if (0) printf
+#define dprintf if (debug_output) printf
 
 #define debug_glBindTexture(target, id) do {    \
         dprintf("  binding texture %s to %u\n", \
@@ -102,6 +102,11 @@ enum {
     FRAG_SRC_NUM_SLOTS
 };
 
+const char* scale_render_mainimage = "\n"
+"void mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
+"    fragColor = texture(iChannel0, __iFinalScale*fragCoord/iResolution.xy);\n"
+"}\n";
+
 const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
 
     "#version 330\n#line 0 0\n",
@@ -118,6 +123,7 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "uniform vec3 iChannelResolution[4]; "
     "uniform float iChannelTime[4]; "
     "uniform float iSampleRate; "
+    "uniform float __iFinalScale; "
     "out vec4 fragColor; ",
 
     "", // iChannel0
@@ -227,13 +233,20 @@ GLfloat u_date[4]; // set every frame
 GLfloat u_channel_resolution[NUM_CHANNELS][3]; // set per-buffer every frame
 GLfloat u_channel_time[NUM_CHANNELS] = { 0, 0, 0, 0 };
 GLfloat u_sample_rate = 44100.;
+GLfloat u_scale_factor = 1;
 
 GLint u_frame = 0;
 
 //////////////////////////////////////////////////////////////////////
 
+int debug_output = 0;
+int is_scaled = 0;
+
 int window_size[2] = { 640, 360 };
-int framebuffer_size[2] = { 0, 0 };
+
+int render_framebuffer_size[2] = { 0, 0 };
+int display_framebuffer_size[2] = { 0, 0 };
+
 float pixel_scale[2] = { 1, 1 };
 
 double cur_mouse[2] = { 0, 0 };
@@ -527,6 +540,9 @@ void setup_uniforms() {
     add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, NUM_CHANNELS);
     add_uniform("iChannelTime", u_channel_time, GL_FLOAT, 4);
     add_uniform("iSampleRate", &u_sample_rate, GL_FLOAT, 1);
+    add_uniform("__iFinalScale", &u_scale_factor, GL_FLOAT, 1);
+
+    printf("there were %d uniforms\n", (int)num_uniforms);
 
     check_opengl_errors("after setting up uniforms");
 
@@ -663,7 +679,7 @@ void setup_framebuffer(renderbuffer_t* rb) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
-                     framebuffer_size[0], framebuffer_size[1], 0,
+                     render_framebuffer_size[0], render_framebuffer_size[1], 0,
                      GL_RGBA, GL_FLOAT, 0);
             
         glBindFramebuffer(GL_FRAMEBUFFER, rb->framebuffers[i]);
@@ -706,11 +722,12 @@ void setup_textures(renderbuffer_t* rb) {
         GLuint uniform_sampler = glGetUniformLocation(rb->program, channel->name);
         glUniform1i(uniform_sampler, i);
         
-        dprintf("setting up texture for channel %d of %s\n",
-                i, rb->name);
         
         if (channel->ctype && channel->ctype != CTYPE_BUFFER) {
 
+            dprintf("setting up texture for channel %d of %s\n",
+                    i, rb->name);
+            
             glGenTextures(1, &channel->tex_id);
             debug_glBindTexture(channel->target, channel->tex_id);
             texture_parameters(channel);
@@ -784,8 +801,8 @@ void screenshot() {
     
     glFinish();
 
-    int w = framebuffer_size[0];
-    int h = framebuffer_size[1];
+    int w = render_framebuffer_size[0];
+    int h = render_framebuffer_size[1];
 
     int stride = w*3;
 
@@ -853,8 +870,8 @@ void resize_framebuffers(renderbuffer_t* rb) {
         
         debug_glBindTexture(GL_TEXTURE_2D, 0);
         
-        int blitw = min(w, framebuffer_size[0]);
-        int blith = min(h, framebuffer_size[1]);
+        int blitw = min(w, render_framebuffer_size[0]);
+        int blith = min(h, render_framebuffer_size[1]);
         
         glBindFramebuffer(GL_READ_FRAMEBUFFER, prev_framebuffers[i]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, rb->framebuffers[i]);
@@ -897,11 +914,14 @@ void render(GLFWwindow* window) {
     u_date[3] = ( ((ltime->tm_hour * 60.f) + ltime->tm_min) * 60.f +
                   ltime->tm_sec + tv.tv_usec * 1e-6f );
 
-    u_resolution[0] = framebuffer_size[0];
-    u_resolution[1] = framebuffer_size[1];
+    u_resolution[0] = render_framebuffer_size[0];
+    u_resolution[1] = render_framebuffer_size[1];
     u_resolution[2] = 1.f;
 
     check_opengl_errors("before set uniforms");
+
+    int screenshot_idx = num_renderbuffers - 1;
+    if (is_scaled) { screenshot_idx -= 1; }
     
     for (int j=0; j<num_renderbuffers; ++j) {
 
@@ -947,8 +967,8 @@ void render(GLFWwindow* window) {
 
                 renderbuffer_t* src_rb = renderbuffers + channel->src_rb_idx;
 
-                channel->width = framebuffer_size[0];
-                channel->height = framebuffer_size[1];
+                channel->width = render_framebuffer_size[0];
+                channel->height = render_framebuffer_size[1];
 
                 GLuint src_tex = src_rb->draw_tex_ids[src_rb->last_drawn];
                 
@@ -987,7 +1007,11 @@ void render(GLFWwindow* window) {
         set_uniforms(rb);
         check_opengl_errors("after set uniforms");
 
-        glViewport(0, 0, framebuffer_size[0], framebuffer_size[1]);
+        if (j == num_renderbuffers - 1) {
+            glViewport(0, 0, display_framebuffer_size[0], display_framebuffer_size[1]);
+        } else {
+            glViewport(0, 0, render_framebuffer_size[0], render_framebuffer_size[1]);
+        }
 
         glBindVertexArray(rb->vao);
         glBindBuffer(GL_ARRAY_BUFFER, rb->vertex_buffer);
@@ -998,6 +1022,11 @@ void render(GLFWwindow* window) {
         rb->last_drawn = cur_draw;
 
         check_opengl_errors("after rendering step");
+
+        if (j == screenshot_idx && (recording || single_shot)) {
+            dprintf("taking a screenshot of %s\n", rb->name);
+            screenshot();
+        }
 
     }
 
@@ -1012,10 +1041,6 @@ void render(GLFWwindow* window) {
     }
     
     dprintf("\n");
-
-    if (recording || single_shot) {
-        screenshot();
-    }
 
     glfwSwapBuffers(window);
 
@@ -1304,7 +1329,8 @@ void load_json(int is_local) {
 
         }
 
-        if (num_renderbuffers >= MAX_RENDERBUFFERS) {
+        // reserve one renderbuffer for downscale
+        if (num_renderbuffers >= MAX_RENDERBUFFERS - 1) {
             fprintf(stderr, "maximum # render buffers exceeded!\n");
             exit(1);
         }
@@ -1389,10 +1415,12 @@ void load_json(int is_local) {
     //////////////////////////////////////////////////
     // assign renderbuffers to channels
 
+    // for each renderbuffer
     for (int j=0; j<num_renderbuffers; ++j) {
-        
+
         renderbuffer_t* rb = renderbuffers + j;
-        
+
+        // for each channel in this renderbuffer
         for (int i=0; i<NUM_CHANNELS; ++i) {
             
             channel_t* channel = rb->channels + i;
@@ -1506,6 +1534,7 @@ void dieusage() {
 #endif            
             "  -keyboard  CHANNEL   Set up keyboard input channel (raw GLSL only)\n"
             "  -geometry  WxH       Initialize window with width W and height H\n"
+            "  -scale     FACTOR    Render at scale FACTOR before reducing to window\n"
             "  -speedup   FACTOR    Speed up by this factor\n"
             "  -record              Output one PNG file per frame\n" 
             "  -profile             Uncap framerate and profile frame times\n"
@@ -1515,6 +1544,7 @@ void dieusage() {
             "  -starttime TIME      Starting value of iTime uniform in seconds\n"
             "  -paused              Start out paused\n"
             "  -D         KEY=VAL   Preprocessor define KEY=VAL\n"
+            "  -d                   Turn on debug output\n"
             "\n"
             );
   
@@ -1594,6 +1624,7 @@ long getint(int argc, char** argv, int i) {
 }
 
 //////////////////////////////////////////////////////////////////////
+// parse command line options
 
 void get_options(int argc, char** argv) {
 
@@ -1656,6 +1687,19 @@ void get_options(int argc, char** argv) {
             
             rduration = getdouble(argc, argv, i+1);
             i += 1;
+
+        } else if (!strcmp(argv[i], "-scale")) {
+            
+            u_scale_factor = getint(argc, argv, i+1);
+
+            if (u_scale_factor <= 0) {
+                fprintf(stderr, "scale factor must be a positive integer!\n");
+                exit(1);
+            }
+
+            is_scaled = 1;
+            
+            i += 1;
             
         } else if (!strcmp(argv[i], "-frames")) {
             
@@ -1708,6 +1752,9 @@ void get_options(int argc, char** argv) {
             i += 1;
             
 #endif
+        } else if (!strcmp(argv[i], "-d")) {
+
+            debug_output = 1;
             
         } else if (argv[i][0] == '-' && !force_files) {
 
@@ -1788,7 +1835,7 @@ void get_options(int argc, char** argv) {
         load_json(is_local);
         
     } else if (is_json_input) {
-        
+
         buf_append_file(&json_buf, argv[argc-1],
                         MAX_FILE_LENGTH, BUF_RAW_APPEND);
 
@@ -1815,6 +1862,40 @@ void get_options(int argc, char** argv) {
                 
         }
             
+    }
+
+    if (is_scaled) {
+
+        require(num_renderbuffers < MAX_RENDERBUFFERS);
+
+        int image_idx = draw_order[num_renderbuffers-1];
+        renderbuffer_t* rb_image = renderbuffers + image_idx;
+
+        rb_image->framebuffer_state = FRAMEBUFFER_UNINITIALIZED;
+
+        dprintf("final renderbuffer is %d with name %s\n",
+                image_idx, rb_image->name);
+
+        renderbuffer_t* rb = renderbuffers + num_renderbuffers;
+        draw_order[num_renderbuffers] = num_renderbuffers;
+        ++num_renderbuffers;
+        
+        rb->name = "Scaled output";
+
+        new_shader_source(rb);
+        
+        rb->fragment_src[FRAG_SRC_MAINIMAGE_SLOT] = scale_render_mainimage;
+
+        channel_t* channel = rb->channels + 0;
+
+        channel->filter = GL_LINEAR_MIPMAP_LINEAR;
+        channel->srgb = 0;
+        channel->vflip = 0;
+        channel->wrap = GL_CLAMP_TO_EDGE;
+
+        channel->ctype = CTYPE_BUFFER;
+        channel->src_rb_idx = image_idx;
+
     }
 
     if (defines_buf.data) {
@@ -2063,18 +2144,31 @@ void key_callback(GLFWwindow* window, int key,
 
 //////////////////////////////////////////////////////////////////////
 
+void framebuffer_size_updated(GLFWwindow* window) {
+
+    glfwGetFramebufferSize(window,
+                           display_framebuffer_size+0,
+                           display_framebuffer_size+1);
+
+    for (int i=0; i<2; ++i) {
+        render_framebuffer_size[i] = display_framebuffer_size[i] * u_scale_factor;
+        float denom = window_size[i] ? window_size[i] : 1;
+        pixel_scale[i] = render_framebuffer_size[i] / denom;
+    }
+
+    dprintf("pixel scale=%f %f\n", pixel_scale[0], pixel_scale[1]);
+    
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void window_size_callback(GLFWwindow* window,
                           int w, int h) {
 
     window_size[0] = w;
     window_size[1] = h;
 
-    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
-
-    for (int i=0; i<2; ++i) {
-        float denom = window_size[i] ? window_size[i] : 1;
-        pixel_scale[i] = framebuffer_size[i] / denom;
-    }
+    framebuffer_size_updated(window);
     
     for (int j=0; j<num_renderbuffers; ++j) {
         renderbuffer_t* rb = renderbuffers + j;
@@ -2115,29 +2209,21 @@ GLFWwindow* setup_window() {
 
     glfwGetMonitorContentScale(glfwGetPrimaryMonitor(), &xscale, &yscale);
 
-    printf("monitor scale=%f, %f\n", xscale, yscale);
+    dprintf("monitor scale=%f, %f\n", xscale, yscale);
 
 #endif    
     
-    GLFWwindow* window = glfwCreateWindow(window_size[0]/xscale,
-                                          window_size[1]/yscale,
+    GLFWwindow* window = glfwCreateWindow(window_size[0]/(xscale),
+                                          window_size[1]/(yscale),
                                           window_title, NULL, NULL);
     if (!window) {
         fprintf(stderr, "Error creating window!\n");
         exit(1);
     }
 
-
     glfwGetWindowSize(window, window_size+0, window_size+1);
 
-    glfwGetFramebufferSize(window, framebuffer_size+0, framebuffer_size+1);
-
-    for (int i=0; i<2; ++i) {
-        float denom = window_size[i] ? window_size[i] : 1;
-        pixel_scale[i] = framebuffer_size[i] / denom;
-    }
-    printf("pixel scale=%f %f\n", pixel_scale[0], pixel_scale[1]);
-
+    framebuffer_size_updated(window);
     
     glfwSetKeyCallback(window, key_callback);
     glfwSetCursorPosCallback(window, cursor_pos_callback);
@@ -2157,11 +2243,14 @@ GLFWwindow* setup_window() {
 }
 
 //////////////////////////////////////////////////////////////////////
+// main function
 
 int main(int argc, char** argv) {
-    
+
+    // zero out all renderbuffers
     memset(renderbuffers, 0, sizeof(renderbuffers));
-    
+
+    // parse command line options
     get_options(argc, argv);
 
     GLFWwindow* window = setup_window();
