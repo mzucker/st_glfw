@@ -104,7 +104,7 @@ enum {
 
 const char* scale_render_mainimage = "\n"
 "void mainImage( out vec4 fragColor, in vec2 fragCoord ) {\n"
-"    fragColor = texture(iChannel0, __iFinalScale*fragCoord/iResolution.xy);\n"
+"    fragColor = texture(iChannel0, _st_glfw_iFinalScale*fragCoord/iResolution.xy);\n"
 "}\n";
 
 const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
@@ -123,7 +123,7 @@ const char* default_fragment_src[FRAG_SRC_NUM_SLOTS] = {
     "uniform vec3 iChannelResolution[4]; "
     "uniform float iChannelTime[4]; "
     "uniform float iSampleRate; "
-    "uniform float __iFinalScale; "
+    "uniform float _st_glfw_iFinalScale; "
     "out vec4 fragColor; ",
 
     "", // iChannel0
@@ -540,7 +540,7 @@ void setup_uniforms() {
     add_uniform("iChannelResolution", u_channel_resolution, GL_FLOAT_VEC3, NUM_CHANNELS);
     add_uniform("iChannelTime", u_channel_time, GL_FLOAT, 4);
     add_uniform("iSampleRate", &u_sample_rate, GL_FLOAT, 1);
-    add_uniform("__iFinalScale", &u_scale_factor, GL_FLOAT, 1);
+    add_uniform("_st_glfw_iFinalScale", &u_scale_factor, GL_FLOAT, 1);
 
     printf("there were %d uniforms\n", (int)num_uniforms);
 
